@@ -44,7 +44,12 @@ services:
       RUST_LOG: info,acdp=info,acdp_registry=info
     volumes:
       - ./config/registry-a.toml:/app/config.toml:ro
-      - registry_a_data:/data
+    tmpfs:
+      # Ephemeral storage — named volumes mount as root on Docker
+      # Desktop, but the registry runs as uid 1001. tmpfs is owned by
+      # the container's effective user and dies with the container,
+      # which is exactly what a demo wants.
+      - /app/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8100/healthz"]
       interval: 5s
@@ -67,13 +72,10 @@ services:
       RUST_LOG: info,acdp=info,acdp_registry=info
     volumes:
       - ./config/registry-b.toml:/app/config.toml:ro
-      - registry_b_data:/data
+    tmpfs:
+      - /app/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8200/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
-
-volumes:
-  registry_a_data: {}
-  registry_b_data: {}

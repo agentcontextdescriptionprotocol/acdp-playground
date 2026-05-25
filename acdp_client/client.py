@@ -16,6 +16,7 @@ client transparently:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -154,18 +155,33 @@ class AcdpClient:
 
     # ── Retrieve ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _encode_ctx(ctx_id: str) -> str:
+        """URL-encode a ctx_id for path interpolation.
+
+        ACDP ctx_ids look like ``acdp://<authority>/<uuid>`` — the
+        embedded ``://`` and ``/`` break axum's `:ctx_id` single-segment
+        capture if sent raw. ``quote(safe="")`` encodes every reserved
+        character.
+        """
+        return quote(ctx_id, safe="")
+
     async def retrieve(self, ctx_id: str) -> FullContext:
+        encoded = self._encode_ctx(ctx_id)
+
         async def send(h: dict[str, str]) -> httpx.Response:
-            return await self._http.get(f"{self._base}/contexts/{ctx_id}", headers=h)
+            return await self._http.get(f"{self._base}/contexts/{encoded}", headers=h)
 
         r = await self._retrying(send)
         _raise_for_status(r)
         return FullContext.model_validate(r.json())
 
     async def retrieve_body(self, ctx_id: str) -> Body:
+        encoded = self._encode_ctx(ctx_id)
+
         async def send(h: dict[str, str]) -> httpx.Response:
             return await self._http.get(
-                f"{self._base}/contexts/{ctx_id}/body", headers=h
+                f"{self._base}/contexts/{encoded}/body", headers=h
             )
 
         r = await self._retrying(send)

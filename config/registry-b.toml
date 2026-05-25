@@ -1,0 +1,41 @@
+[registry]
+authority = "registry-b.playground.local"
+port      = 8200
+bind      = "0.0.0.0"
+profiles  = ["acdp-registry-core", "acdp-registry-discovery"]
+cross_registry_resolution = true
+
+[registry.tls]
+enabled = false
+
+[registry.cors]
+allowed_origins = ["*"]
+
+[storage]
+backend     = "sqlite"
+sqlite_path = "/data/registry-b.db"
+max_connections = 10
+
+[auth]
+enabled                = true
+did_methods            = ["did:web"]
+anonymous_public_reads = true
+token_ttl_seconds      = 3600
+challenge_ttl_seconds  = 300
+token_leeway_seconds   = 30
+# jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
+
+[webhook]
+enabled        = true
+url            = "http://playground:8000/webhooks/acdp"
+timeout_seconds = 5
+max_retries    = 3
+queue_capacity = 1024
+
+[limits]
+max_payload_bytes           = 1048576
+max_embedded_bytes          = 65536
+idempotency_key_ttl_seconds = 86400
+
+[playground]
+enabled = true

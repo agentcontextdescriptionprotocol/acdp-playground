@@ -35,6 +35,7 @@ async def main() -> int:
     failures += await _check_sdk_round_trip()
     failures += await _check_agent_publish_path()
     failures += await _check_webhook_signature()
+    failures += await _check_control_plane_forwarding()
 
     print()
     if failures:
@@ -48,7 +49,7 @@ async def main() -> int:
 
 
 async def _check_scenarios_load() -> int:
-    print("\n[1/4] scenario catalog loads")
+    print("\n[1/5] scenario catalog loads")
     try:
         from playground.scenarios import list_scenarios
     except Exception as e:  # noqa: BLE001
@@ -73,7 +74,7 @@ async def _check_scenarios_load() -> int:
 
 
 async def _check_sdk_round_trip() -> int:
-    print("\n[2/4] acdp-py SDK round-trip")
+    print("\n[2/5] acdp-py SDK round-trip")
     try:
         from acdp import AcdpProducer, AcdpVerifier
     except Exception as e:  # noqa: BLE001
@@ -119,7 +120,7 @@ async def _check_sdk_round_trip() -> int:
 
 
 async def _check_agent_publish_path() -> int:
-    print("\n[3/4] BasePlaygroundAgent.publish against fake registry")
+    print("\n[3/5] BasePlaygroundAgent.publish against fake registry")
     try:
         from acdp import AcdpProducer
         from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -180,7 +181,7 @@ async def _check_agent_publish_path() -> int:
 
 
 async def _check_webhook_signature() -> int:
-    print("\n[4/4] webhook signature verify")
+    print("\n[4/5] webhook signature verify")
     secret = "test-secret"
     body = b'{"type":"context_published","agent_id":"did:web:x","ctx_id":"acdp://r/1"}'
     expected = f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
@@ -208,6 +209,122 @@ async def _check_webhook_signature() -> int:
 
     print("  ok: valid signature accepted, bad signature rejected")
     return 0
+
+
+async def _check_control_plane_forwarding() -> int:
+    """Stand up a tiny in-process HTTP stub and assert the playground's
+    ControlPlaneClient signs + forwards run lifecycle + webhook payloads
+    correctly. Replaces the previous "control-plane stub deferred" gap
+    (deferred-plan §13.3)."""
+    print("\n[5/5] control-plane forwarding (in-process stub)")
+
+    try:
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+    except Exception as e:  # noqa: BLE001
+        print(f"  SKIP (starlette/uvicorn missing): {e}")
+        return 0
+
+    captured: list[dict[str, Any]] = []
+
+    async def stub_handler(request):
+        captured.append({
+            "path": request.url.path,
+            "headers": dict(request.headers),
+            "body": (await request.body()).decode("utf-8"),
+        })
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[
+        Route("/runs/started", stub_handler, methods=["POST"]),
+        Route("/runs/{run_id}/complete", stub_handler, methods=["POST"]),
+        Route("/ingest/acdp", stub_handler, methods=["POST"]),
+    ])
+
+    # Pick an ephemeral port and serve in a background task.
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning"
+    )
+    server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
+    # Wait for the server to bind.
+    for _ in range(50):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        print("  FAIL: stub control-plane never bound")
+        server.should_exit = True
+        await serve_task
+        return 1
+
+    try:
+        from playground.config import Settings
+        from playground.control_plane import ControlPlaneClient
+
+        settings = Settings(
+            control_plane_url=f"http://127.0.0.1:{port}",
+            control_plane_hmac_secret="cp-secret",
+        )
+        client = ControlPlaneClient(settings)
+
+        await client.notify_run_started("r-1", "s4_chain", {"topic": "smoke"})
+        await client.notify_run_complete("r-1", "complete", {"contexts": 3})
+        await client.forward_webhook(
+            b'{"type":"context_published","ctx_id":"acdp://r/1"}',
+            headers={"X-ACDP-Event": "context_published"},
+        )
+        await client.aclose()
+
+        # Verify ordering, paths, signature presence + correctness.
+        if len(captured) != 3:
+            print(f"  FAIL: expected 3 forwarded requests, got {len(captured)}")
+            return 1
+
+        paths = [r["path"] for r in captured]
+        if paths != ["/runs/started", "/runs/r-1/complete", "/ingest/acdp"]:
+            print(f"  FAIL: unexpected path order: {paths}")
+            return 1
+
+        # All three carry HMAC over the body.
+        for r in captured:
+            sig = r["headers"].get("x-acdp-signature")
+            if not sig or not sig.startswith("sha256="):
+                print(f"  FAIL: missing/malformed signature on {r['path']}: {sig}")
+                return 1
+            expected = "sha256=" + hmac.new(
+                b"cp-secret", r["body"].encode("utf-8"), hashlib.sha256
+            ).hexdigest()
+            if sig != expected:
+                print(f"  FAIL: HMAC mismatch on {r['path']}")
+                return 1
+
+        # The webhook forward must preserve the original event header.
+        ingest = captured[2]
+        if ingest["headers"].get("x-acdp-event") != "context_published":
+            print(f"  FAIL: X-ACDP-Event not preserved on /ingest/acdp")
+            return 1
+
+        # Lifecycle payloads carry the right discriminators.
+        if "r-1" not in captured[0]["body"] or "s4_chain" not in captured[0]["body"]:
+            print(f"  FAIL: runs/started body missing fields: {captured[0]['body']}")
+            return 1
+        if "complete" not in captured[1]["body"]:
+            print(f"  FAIL: runs/complete body missing status: {captured[1]['body']}")
+            return 1
+
+        print(f"  ok: 3 forwarded, all HMAC-verified, event header preserved")
+        return 0
+    finally:
+        server.should_exit = True
+        await serve_task
 
 
 if __name__ == "__main__":

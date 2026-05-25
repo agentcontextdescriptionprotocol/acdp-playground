@@ -9,11 +9,11 @@ cross_registry_resolution = true
 enabled = false
 
 [registry.cors]
-allowed_origins = ["*"]
+allowed_origins = []
 
 [storage]
 backend     = "sqlite"
-sqlite_path = "/data/registry-b.db"
+sqlite_path = "/app/data/registry-b.db"
 max_connections = 10
 
 [auth]
@@ -26,7 +26,9 @@ token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
 
 [webhook]
-enabled        = true
+# Disabled for local-stack demos (registry SSRF refuses http://); see
+# registry-a.toml for the full rationale. Direct SSE still flows.
+enabled        = false
 url            = "http://playground:8000/webhooks/acdp"
 timeout_seconds = 5
 max_retries    = 3

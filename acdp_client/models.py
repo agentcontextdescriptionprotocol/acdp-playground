@@ -80,8 +80,14 @@ class SearchHit(_Open):
 
 
 class SearchResponse(_Open):
-    results: list[SearchHit] = Field(default_factory=list)
+    # The registry returns this list under the key `matches`; expose
+    # it under both names so callers can use whichever reads better.
+    matches: list[SearchHit] = Field(default_factory=list)
     next_cursor: str | None = None
+
+    @property
+    def results(self) -> list[SearchHit]:
+        return self.matches
 
 
 # ── Webhook + SSE event types ────────────────────────────────────────────

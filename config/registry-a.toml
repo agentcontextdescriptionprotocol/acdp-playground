@@ -9,11 +9,14 @@ cross_registry_resolution = true
 enabled = false
 
 [registry.cors]
-allowed_origins = ["*"]
+allowed_origins = []
 
 [storage]
 backend     = "sqlite"
-sqlite_path = "/data/registry-a.db"
+# WORKDIR is /app and owned by uid 1001 (acdp) per the runtime image —
+# named volumes mount as root, so anchor the sqlite file under
+# /app/data which the runtime user can write.
+sqlite_path = "/app/data/registry-a.db"
 max_connections = 10
 
 [auth]
@@ -30,12 +33,16 @@ token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
 
 [webhook]
-enabled        = true
+# Disabled for local-stack demos: the registry's SSRF policy refuses
+# `http://` webhook URLs (only https). Loopback/private-host exemption
+# for playground mode is a known follow-up. The playground's own SSE
+# stream still emits agent.started / acdp.publish / run.complete
+# events directly, so the demo isn't degraded.
+enabled        = false
 url            = "http://playground:8000/webhooks/acdp"
 timeout_seconds = 5
 max_retries    = 3
 queue_capacity = 1024
-# secret comes from ACDP_REGISTRY_WEBHOOK__SECRET
 
 [limits]
 max_payload_bytes           = 1048576

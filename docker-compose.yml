@@ -1,0 +1,79 @@
+# Build context is the parent dir so we can COPY both acdp-playground/
+# and the sibling acdp-rs/ + acdp-registry-rs/ repos that the playground
+# image and the registry image depend on.
+
+services:
+  playground:
+    build:
+      context: ..
+      dockerfile: acdp-playground/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      REGISTRY_A_URL: http://registry-a:8100
+      REGISTRY_B_URL: http://registry-b:8200
+      REGISTRY_A_AUTHORITY: registry-a.playground.local
+      REGISTRY_B_AUTHORITY: registry-b.playground.local
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-}
+      CONTROL_PLANE_HMAC_SECRET: ${CONTROL_PLANE_HMAC_SECRET:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
+      LOG_FORMAT: ${LOG_FORMAT:-pretty}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      registry-a:
+        condition: service_healthy
+      registry-b:
+        condition: service_healthy
+
+  registry-a:
+    build:
+      context: ..
+      dockerfile: acdp-registry-rs/docker/Dockerfile
+      args:
+        STORAGE_FEATURE: storage-sqlite
+    ports: ["8100:8100"]
+    environment:
+      ACDP_REGISTRY_CONFIG: /app/config.toml
+      ACDP_REGISTRY_WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
+      # 32-byte base64 secret. The registry refuses to start with the
+      # literal "changeme"; generate one with `openssl rand -base64 32`.
+      ACDP_REGISTRY_AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
+      RUST_LOG: info,acdp=info,acdp_registry=info
+    volumes:
+      - ./config/registry-a.toml:/app/config.toml:ro
+      - registry_a_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8100/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  registry-b:
+    build:
+      context: ..
+      dockerfile: acdp-registry-rs/docker/Dockerfile
+      args:
+        STORAGE_FEATURE: storage-sqlite
+    ports: ["8200:8200"]
+    environment:
+      ACDP_REGISTRY_CONFIG: /app/config.toml
+      ACDP_REGISTRY_WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
+      # 32-byte base64 secret. The registry refuses to start with the
+      # literal "changeme"; generate one with `openssl rand -base64 32`.
+      ACDP_REGISTRY_AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
+      RUST_LOG: info,acdp=info,acdp_registry=info
+    volumes:
+      - ./config/registry-b.toml:/app/config.toml:ro
+      - registry_b_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8200/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  registry_a_data: {}
+  registry_b_data: {}

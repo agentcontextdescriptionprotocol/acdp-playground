@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The playground depends on the sibling acdp-rs SDK via uv;
+          # we don't actually need to check it out here because the
+          # SDK Python bindings come pre-built from PyPI in the
+          # current uv configuration. If a future release pins to a
+          # local path, add a second `actions/checkout` step.
+          submodules: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: 'latest'
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen
+        env:
+          UV_LINK_MODE: copy
+
+      - name: Run pytest
+        run: uv run pytest --tb=short
+        env:
+          # Offline-safe defaults; no external services needed for
+          # the unit suite (smoke check uses an in-process stub).
+          LLM_PROVIDER: mock
+
+      - name: Run smoke test (5/5 checks including in-process CP stub)
+        run: uv run python scripts/smoke_test.py
+        env:
+          LLM_PROVIDER: mock

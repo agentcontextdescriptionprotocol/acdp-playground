@@ -19,8 +19,9 @@ playground/
   events.py                   # in-process SSE bus
   control_plane.py            # no-op when CONTROL_PLANE_URL unset
 scripts/
-  smoke_test.py               # offline wiring check
+  smoke_test.py               # 5-check offline wiring + in-process CP stub
   gen_keys.py                 # deterministic agent identity material
+  pinned_keys_diff.py         # translate registry [playground]pinned_keys → CONTROL_PLANE_PINNED_KEYS env
 config/                       # registry-a.toml, registry-b.toml
 docker-compose.yml            # playground + two registries
 ```
@@ -73,10 +74,24 @@ Set `LLM_PROVIDER` in `.env` to one of:
 
 ## Control plane
 
-`acdp-control-plane` is a separate sibling project (not yet implemented).
+`acdp-control-plane` is a separate sibling project — now fully
+implemented with bearer-token issuance, RFC 7662 introspection,
+RFC 7009 revocation, federated cross-issuer validation, multi-tenancy,
+policy engine, and an append-only audit ledger.
+
 When `CONTROL_PLANE_URL` is empty, the playground runs standalone. When
 set, every registry webhook is HMAC-signed and forwarded; run
-start/complete notifications are also posted there.
+start/complete notifications are also posted there. Multi-tenant
+deployments set the `X-Tenant-Id` header on forwarded webhooks so
+the CP attributes events to the right tenant.
+
+### TokenManager refresh-reason telemetry
+
+`acdp_client.TokenManager` emits structured logs on every mint with a
+`refresh_reason` field — one of `first_use`, `proactive_refresh`, or
+`reactive_401` — so operators can detect abnormal patterns
+(secret rotation, audience mismatch, clock skew). Logs land at INFO
+on success and WARNING on failure with a `failure_kind` discriminator.
 
 ## Compose layout
 

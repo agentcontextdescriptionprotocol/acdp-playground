@@ -12,6 +12,7 @@ from acdp import AcdpProducer
 from acdp_client.token_manager import (
     CachedToken,
     ChallengeError,
+    RefreshReason,
     TokenIssueError,
     TokenManager,
 )
@@ -169,3 +170,151 @@ async def test_different_registries_get_separate_tokens():
     b = await tm.token_for(p, "http://reg-b.test")
     assert a is not b
     assert counter["tokens"] == 2
+
+
+# ── refresh-reason telemetry ─────────────────────────────────────────────
+
+
+def _mint_success_records(caplog: pytest.LogCaptureFixture) -> list:
+    """All `acdp.token.mint.success` records captured so far."""
+    return [
+        r for r in caplog.records
+        if getattr(r, "event", None) == "acdp.token.mint.success"
+    ]
+
+
+def _mint_start_records(caplog: pytest.LogCaptureFixture) -> list:
+    return [
+        r for r in caplog.records
+        if getattr(r, "event", None) == "acdp.token.mint.start"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_first_mint_logs_first_use_reason(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    handler, _ = _make_handler()
+    tm = TokenManager(http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    p = _producer()
+
+    await tm.token_for(p, "http://registry.test")
+
+    successes = _mint_success_records(caplog)
+    assert len(successes) == 1
+    assert successes[0].refresh_reason == RefreshReason.FIRST_USE.value
+    assert successes[0].agent_did == p.agent_did
+    assert successes[0].registry_base_url == "http://registry.test"
+    assert successes[0].ttl_seconds > 0
+    assert successes[0].elapsed_ms >= 0
+
+    # The matching start record carries the same reason.
+    starts = _mint_start_records(caplog)
+    assert len(starts) == 1
+    assert starts[0].refresh_reason == RefreshReason.FIRST_USE.value
+
+
+@pytest.mark.asyncio
+async def test_stale_cache_logs_proactive_refresh(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    # token_ttl=1s, leeway=30s → second call sees the cached token as stale
+    handler, _ = _make_handler(token_ttl=1)
+    tm = TokenManager(
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        leeway_seconds=30,
+    )
+    p = _producer()
+
+    await tm.token_for(p, "http://registry.test")  # FIRST_USE
+    caplog.clear()
+    await tm.token_for(p, "http://registry.test")  # PROACTIVE_REFRESH
+
+    successes = _mint_success_records(caplog)
+    assert len(successes) == 1
+    assert successes[0].refresh_reason == RefreshReason.PROACTIVE_REFRESH.value
+
+
+@pytest.mark.asyncio
+async def test_invalidate_then_mint_logs_reactive_401(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    handler, _ = _make_handler()
+    tm = TokenManager(http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    p = _producer()
+
+    await tm.token_for(p, "http://registry.test")  # FIRST_USE
+    caplog.clear()
+    tm.invalidate(p, "http://registry.test")  # default reason = REACTIVE_401
+    await tm.token_for(p, "http://registry.test")
+
+    successes = _mint_success_records(caplog)
+    assert len(successes) == 1
+    assert successes[0].refresh_reason == RefreshReason.REACTIVE_401.value
+
+
+@pytest.mark.asyncio
+async def test_invalidate_pending_reason_is_consumed_once(
+    caplog: pytest.LogCaptureFixture,
+):
+    """A pending REACTIVE_401 should apply to the *next* mint only.
+
+    Subsequent mints (after the cache refills and goes stale again)
+    must fall back to PROACTIVE_REFRESH; the explicit reason is not
+    sticky.
+    """
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    handler, _ = _make_handler(token_ttl=1)
+    tm = TokenManager(
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        leeway_seconds=30,
+    )
+    p = _producer()
+
+    await tm.token_for(p, "http://registry.test")  # FIRST_USE
+    tm.invalidate(p, "http://registry.test")
+    await tm.token_for(p, "http://registry.test")  # REACTIVE_401 (consumed)
+    caplog.clear()
+    await tm.token_for(p, "http://registry.test")  # stale → PROACTIVE_REFRESH
+
+    successes = _mint_success_records(caplog)
+    assert len(successes) == 1
+    assert successes[0].refresh_reason == RefreshReason.PROACTIVE_REFRESH.value
+
+
+@pytest.mark.asyncio
+async def test_explicit_invalidate_reason_overrides_default(
+    caplog: pytest.LogCaptureFixture,
+):
+    """`invalidate(reason=...)` lets callers signal admin-driven rotations
+    distinctly from server-driven 401s."""
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    handler, _ = _make_handler()
+    tm = TokenManager(http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    p = _producer()
+
+    await tm.token_for(p, "http://registry.test")
+    caplog.clear()
+    tm.invalidate(p, "http://registry.test", reason=RefreshReason.PROACTIVE_REFRESH)
+    await tm.token_for(p, "http://registry.test")
+
+    successes = _mint_success_records(caplog)
+    assert len(successes) == 1
+    assert successes[0].refresh_reason == RefreshReason.PROACTIVE_REFRESH.value
+
+
+@pytest.mark.asyncio
+async def test_failed_mint_logs_failure_with_kind(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="acdp_client.token_manager")
+    handler, _ = _make_handler(token_status=401)
+    tm = TokenManager(http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    p = _producer()
+
+    with pytest.raises(TokenIssueError):
+        await tm.token_for(p, "http://registry.test")
+
+    failures = [
+        r for r in caplog.records
+        if getattr(r, "event", None) == "acdp.token.mint.failure"
+    ]
+    assert len(failures) == 1
+    assert failures[0].failure_kind == "token_status"
+    assert failures[0].refresh_reason == RefreshReason.FIRST_USE.value
+    assert "401" in failures[0].detail

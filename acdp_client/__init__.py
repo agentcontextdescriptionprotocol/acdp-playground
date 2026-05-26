@@ -19,6 +19,7 @@ from acdp_client.models import (
 from acdp_client.token_manager import (
     CachedToken,
     ChallengeError,
+    RefreshReason,
     TokenAuthError,
     TokenError,
     TokenIssueError,
@@ -34,6 +35,7 @@ __all__ = [
     "ChallengeError",
     "FullContext",
     "PublishResponse",
+    "RefreshReason",
     "SearchResponse",
     "Signature",
     "StepEvent",

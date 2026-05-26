@@ -40,6 +40,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import httpx
@@ -48,6 +49,29 @@ if TYPE_CHECKING:
     from acdp import AcdpProducer
 
 log = logging.getLogger(__name__)
+
+
+# ── refresh telemetry ────────────────────────────────────────────────────
+
+
+class RefreshReason(str, Enum):
+    """Why a token mint round trip happened.
+
+    Logged on every mint as ``extra={"refresh_reason": <value>, ...}`` so
+    operators can detect abnormal patterns:
+
+    * A spike in ``proactive_refresh`` near the leeway window usually
+      means the registry's clock skewed or shortened its token TTL.
+    * A spike in ``reactive_401`` means tokens are being rejected by the
+      server even when the client believes they're fresh — secret
+      rotation, audience mismatch, or revoked key.
+    * ``first_use`` is expected on startup or when a new
+      ``(agent, registry)`` pair is exercised for the first time.
+    """
+
+    FIRST_USE = "first_use"
+    PROACTIVE_REFRESH = "proactive_refresh"
+    REACTIVE_401 = "reactive_401"
 
 
 # ── exceptions ───────────────────────────────────────────────────────────
@@ -111,6 +135,10 @@ class TokenManager:
         self._leeway = leeway_seconds
         self._cache: dict[tuple[str, str], CachedToken] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # When `invalidate()` is called, remember why so the *next* mint
+        # for that key carries the right refresh-reason in telemetry.
+        # Cleared as soon as the next mint completes.
+        self._pending_reasons: dict[tuple[str, str], RefreshReason] = {}
         self._global_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
@@ -142,18 +170,52 @@ class TokenManager:
             cached = self._cache.get(key)
             if cached and cached.is_fresh(self._leeway):
                 return cached
-            fresh = await self._mint(producer, key[1])
+            reason = self._classify_refresh(key, cached)
+            fresh = await self._mint(producer, key[1], reason=reason)
             self._cache[key] = fresh
             return fresh
 
-    def invalidate(self, producer: "AcdpProducer", registry_base_url: str) -> None:
+    def invalidate(
+        self,
+        producer: "AcdpProducer",
+        registry_base_url: str,
+        *,
+        reason: RefreshReason = RefreshReason.REACTIVE_401,
+    ) -> None:
         """Drop the cached token, forcing a refresh on the next call.
 
         Used by :class:`acdp_client.AcdpClient` when a request returns 401
-        even though we believed the cached token was still valid.
+        even though we believed the cached token was still valid; the
+        default ``reason`` reflects that. Other callers can pass a
+        different reason (e.g. an admin-driven manual rotation) to keep
+        the telemetry distinction clean.
         """
         key = (producer.agent_did, registry_base_url.rstrip("/"))
         self._cache.pop(key, None)
+        self._pending_reasons[key] = reason
+
+    def _classify_refresh(
+        self,
+        key: tuple[str, str],
+        cached: CachedToken | None,
+    ) -> RefreshReason:
+        """Pick the refresh reason for the imminent mint.
+
+        Explicit pending reasons (set by :meth:`invalidate`) win — they
+        carry signal the cache state can no longer recover (e.g.
+        ``REACTIVE_401`` after a server-side rejection). Otherwise:
+
+        * no prior cached token  → ``FIRST_USE``
+        * stale cached token     → ``PROACTIVE_REFRESH``
+        """
+        pending = self._pending_reasons.pop(key, None)
+        if pending is not None:
+            return pending
+        return (
+            RefreshReason.PROACTIVE_REFRESH
+            if cached is not None
+            else RefreshReason.FIRST_USE
+        )
 
     # ── internals ────────────────────────────────────────────────────────
 
@@ -166,15 +228,44 @@ class TokenManager:
             return lock
 
     async def _mint(
-        self, producer: "AcdpProducer", registry_base_url: str
+        self,
+        producer: "AcdpProducer",
+        registry_base_url: str,
+        *,
+        reason: RefreshReason,
     ) -> CachedToken:
-        """Run one full challenge → sign → token round trip."""
+        """Run one full challenge → sign → token round trip.
+
+        Emits two structured INFO log records for each attempt so
+        operators can correlate refresh-reason patterns to outcomes:
+
+        * ``event=acdp.token.mint.start`` — request observed
+        * ``event=acdp.token.mint.success`` — JWT issued
+        * ``event=acdp.token.mint.failure`` — challenge or token POST
+          failed (raised as a TokenError after logging)
+        """
+        started_at = time.monotonic()
+        log_extra: dict[str, object] = {
+            "event": "acdp.token.mint.start",
+            "refresh_reason": reason.value,
+            "agent_did": producer.agent_did,
+            "registry_base_url": registry_base_url,
+        }
+        log.info("acdp token mint started", extra=log_extra)
+
         # Step 1 — challenge
         ch_url = f"{registry_base_url}/auth/challenge"
         ch_req = {"agent_id": producer.agent_did}
-        log.debug("token mint: challenge %s for %s", ch_url, producer.agent_did)
-        ch_resp = await self._http.post(ch_url, json=ch_req)
+        try:
+            ch_resp = await self._http.post(ch_url, json=ch_req)
+        except httpx.HTTPError as e:
+            self._log_failure(reason, producer, registry_base_url, "challenge_transport", str(e))
+            raise ChallengeError(f"POST {ch_url} failed: {e}") from e
         if not ch_resp.is_success:
+            self._log_failure(
+                reason, producer, registry_base_url, "challenge_status",
+                f"status={ch_resp.status_code}",
+            )
             raise ChallengeError(
                 f"POST {ch_url} -> {ch_resp.status_code}: {ch_resp.text[:300]}"
             )
@@ -184,6 +275,9 @@ class TokenManager:
             expires_at = int(ch["expires_at"])
             signing_input = ch["signing_input"]
         except (KeyError, ValueError) as e:
+            self._log_failure(
+                reason, producer, registry_base_url, "challenge_malformed", str(e),
+            )
             raise ChallengeError(f"malformed challenge: {e}: {ch}") from None
 
         # Step 2 — sign with the agent's Ed25519 key (via the SDK)
@@ -199,8 +293,18 @@ class TokenManager:
             "algorithm": "ed25519",
             "signature": signature,
         }
-        tk_resp = await self._http.post(tk_url, json=tk_req)
+        try:
+            tk_resp = await self._http.post(tk_url, json=tk_req)
+        except httpx.HTTPError as e:
+            self._log_failure(
+                reason, producer, registry_base_url, "token_transport", str(e),
+            )
+            raise TokenIssueError(f"POST {tk_url} failed: {e}") from e
         if not tk_resp.is_success:
+            self._log_failure(
+                reason, producer, registry_base_url, "token_status",
+                f"status={tk_resp.status_code}",
+            )
             raise TokenIssueError(
                 f"POST {tk_url} -> {tk_resp.status_code}: {tk_resp.text[:300]}"
             )
@@ -212,14 +316,46 @@ class TokenManager:
                 expires_at=int(tk["expires_at"]),
             )
         except (KeyError, ValueError) as e:
+            self._log_failure(
+                reason, producer, registry_base_url, "token_malformed", str(e),
+            )
             raise TokenIssueError(f"malformed token response: {e}: {tk}") from None
-        log.debug(
-            "token mint: issued for %s, expires_at=%d (in %ds)",
-            producer.agent_did,
-            cached.expires_at,
-            cached.expires_at - int(time.time()),
+
+        ttl_seconds = cached.expires_at - int(time.time())
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        log.info(
+            "acdp token mint succeeded",
+            extra={
+                "event": "acdp.token.mint.success",
+                "refresh_reason": reason.value,
+                "agent_did": producer.agent_did,
+                "registry_base_url": registry_base_url,
+                "expires_at": cached.expires_at,
+                "ttl_seconds": ttl_seconds,
+                "elapsed_ms": elapsed_ms,
+            },
         )
         return cached
+
+    def _log_failure(
+        self,
+        reason: RefreshReason,
+        producer: "AcdpProducer",
+        registry_base_url: str,
+        failure_kind: str,
+        detail: str,
+    ) -> None:
+        log.warning(
+            "acdp token mint failed",
+            extra={
+                "event": "acdp.token.mint.failure",
+                "refresh_reason": reason.value,
+                "agent_did": producer.agent_did,
+                "registry_base_url": registry_base_url,
+                "failure_kind": failure_kind,
+                "detail": detail[:300],
+            },
+        )
 
 
 # ── module-level singleton (optional convenience) ────────────────────────

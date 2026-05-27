@@ -6,19 +6,31 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    # Steps execute from inside the playground checkout. The sibling
+    # SDK is alongside at ../acdp-rs, matching the layout that uv's
+    # editable source declaration in `pyproject.toml` expects.
+    working-directory: acdp-playground
+
 jobs:
   test:
     name: pytest + smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout playground
+        uses: actions/checkout@v5
         with:
-          # The playground depends on the sibling acdp-rs SDK via uv;
-          # we don't actually need to check it out here because the
-          # SDK Python bindings come pre-built from PyPI in the
-          # current uv configuration. If a future release pins to a
-          # local path, add a second `actions/checkout` step.
-          submodules: false
+          path: acdp-playground
+
+      - name: Checkout sibling SDK (acdp-rs)
+        # `pyproject.toml` pins `acdp` to `../acdp-rs/bindings/acdp-py`
+        # as an editable install (Rust → Python bindings). uv needs
+        # this path resolvable at sync time.
+        uses: actions/checkout@v5
+        with:
+          repository: agentcontextdescriptionprotocol/acdp-rs
+          path: acdp-rs
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -29,7 +41,10 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --frozen
+        # `--extra dev` pulls in pytest + pytest-asyncio + ruff, which
+        # live under [project.optional-dependencies.dev] in
+        # pyproject.toml. `--frozen` requires the committed uv.lock.
+        run: uv sync --frozen --extra dev
         env:
           UV_LINK_MODE: copy
 

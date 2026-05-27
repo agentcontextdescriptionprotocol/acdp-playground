@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout playground
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           path: acdp-playground
 
@@ -27,7 +27,7 @@ jobs:
         # `pyproject.toml` pins `acdp` to `../acdp-rs/bindings/acdp-py`
         # as an editable install (Rust → Python bindings). uv needs
         # this path resolvable at sync time.
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: agentcontextdescriptionprotocol/acdp-rs
           path: acdp-rs

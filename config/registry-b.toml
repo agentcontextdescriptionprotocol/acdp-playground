@@ -24,6 +24,13 @@ token_ttl_seconds      = 3600
 challenge_ttl_seconds  = 300
 token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
+require_tenant = false
+
+# Tenant bindings (see registry-a.toml for the rationale). Registry-b
+# carries the tenant-b agent for the cross-registry tenant scenario.
+[[auth.tenant_agents]]
+agent_did = "did:web:registry-b.playground.local:agents:tenant-b-agent"
+tenant_id = "tenant-b"
 
 [webhook]
 # Disabled for local-stack demos (registry SSRF refuses http://); see

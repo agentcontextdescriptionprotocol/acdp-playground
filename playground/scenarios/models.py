@@ -12,7 +12,6 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 
-from acdp_client.models import StepEvent
 
 RegistryMode = Literal["single", "dual", "cross_org"]
 Framework = Literal["langchain", "crewai", "langgraph", "mixed"]

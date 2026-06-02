@@ -24,9 +24,26 @@ class Settings(BaseSettings):
     # Optional control plane
     control_plane_url: str = ""
     control_plane_hmac_secret: str = ""
+    # Admin bearer token for CP admin endpoints (introspection of the
+    # revocation feed, pinned-key reload). Matches one of the CP's
+    # AUTH_ADMIN_API_KEYS. Empty disables those calls.
+    control_plane_admin_token: str = ""
 
     # Webhook signing — must match the value the registries are launched with
     webhook_secret: str = "playground-dev-secret"
+
+    # ── V2 protocol features ─────────────────────────────────────────────
+    # Default signing algorithm for agents that don't override it.
+    default_signature_alg: Literal["ed25519", "ecdsa-p256"] = "ed25519"
+    # When true, scenarios that support tenancy attach tenant context
+    # (tenant-bound tokens via the registry's tenant_agents config, and
+    # X-Tenant-Id fallback for unbound publishes). Off by default so the
+    # legacy single-tenant scenarios (S1–S8) are unaffected.
+    tenancy_enabled: bool = False
+    # JWT signing algorithm the registries/CP are launched with. Purely
+    # informational on the playground side (it verifies via JWKS when it
+    # needs to); surfaced so scenarios can branch/report.
+    jwt_signing_alg: Literal["HS256", "EdDSA"] = "HS256"
 
     # Logging
     log_format: Literal["pretty", "json"] = "pretty"
@@ -40,6 +57,10 @@ class Settings(BaseSettings):
     )
 
     # ── derived ──────────────────────────────────────────────────────────
+
+    @property
+    def control_plane_enabled(self) -> bool:
+        return bool(self.control_plane_url)
 
     def registry_url_for(self, authority: str) -> str | None:
         if authority == self.registry_a_authority:

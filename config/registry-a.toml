@@ -31,6 +31,43 @@ token_ttl_seconds      = 3600
 challenge_ttl_seconds  = 300
 token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
+#
+# Strict tenancy is OFF so the legacy scenarios (which assert no tenant)
+# keep working; the tenant-isolation scenario asserts isolation between
+# the bound agents below rather than relying on require_tenant.
+require_tenant = false
+
+# ── Tenant bindings (issuer-authoritative) ───────────────────────────
+# The registry stamps the `tenant` claim on tokens it issues to these
+# agent DIDs (RFC-ACDP-0008 §6.4: the JWT claim is the authoritative
+# tenant signal; X-Tenant-Id is only a fallback for unbound publishes).
+# DIDs are slug-stable across runs (only the key rotates), so pinning
+# them here is safe.
+[[auth.tenant_agents]]
+agent_did = "did:web:registry-a.playground.local:agents:tenant-a-agent"
+tenant_id = "tenant-a"
+
+[[auth.tenant_agents]]
+agent_did = "did:web:registry-a.playground.local:agents:tenant-b-agent"
+tenant_id = "tenant-b"
+
+# ── EdDSA JWT signing + JWKS federation (optional) ───────────────────
+# Default is HS256 (symmetric, via ACDP_REGISTRY_AUTH__JWT_SECRET). To
+# publish a verifiable JWKS for federated peers, switch to EdDSA and
+# supply a PKCS#8 Ed25519 PEM (e.g. via ACDP_REGISTRY_AUTH__JWT_PRIVATE_KEY_PEM):
+#   jwt_signing_alg     = "EdDSA"
+#   jwt_private_key_pem = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+
+# ── Cross-issuer revocation feed (full stack only) ───────────────────
+# When the control plane is up (docker-compose.full.yml), this registry
+# polls the CP's revocation feed and applies revocations locally, so a
+# token revoked at the CP is rejected here after one poll interval.
+# Uncomment for the full stack:
+#   [[auth.revocation_feeds]]
+#   issuer      = "control-plane.playground.local"
+#   feed_url    = "http://control-plane:3001/auth/revocations"
+#   admin_token = "playground-cp-admin"
+#   poll_seconds = 30
 
 [webhook]
 # Disabled for local-stack demos: the registry's SSRF policy refuses
@@ -51,3 +88,33 @@ idempotency_key_ttl_seconds = 86400
 
 [playground]
 enabled = true
+# pinned_only stays false (lax): publishes from the run-keyed scenario
+# agents skip DID verification. Flip to true only on a dedicated
+# strict-pinning registry — it rejects any publish whose signature isn't
+# from a currently-valid pinned key below.
+pinned_only = false
+
+# ── Pinned keys with rotation/overlap windows (RFC-ACDP-0008 §9.3) ────
+# Demonstrates key rotation: `rotating-publisher` has an old key valid
+# through 2026-06-02 and a new key valid from 2026-06-01, so both verify
+# during the overlap window. `valid_from`/`valid_until` are unix seconds
+# (inclusive start, exclusive end); omit either for an open bound.
+# Edit + `POST /admin/pinned-keys/reload` to rotate without a restart.
+# Keys here are deterministic demo material from scripts/gen_keys.py.
+[[playground.pinned_keys]]
+agent_did      = "did:web:registry-a.playground.local:agents:rotating-publisher"
+public_key_b64 = "9tsbbuOon0zOWgZYlL3m+nQ0PTVS9/MWOmQ/EQXgpRk="
+algorithm      = "ed25519"
+valid_until    = 1780358400  # 2026-06-02T00:00:00Z — old key, expiring
+
+[[playground.pinned_keys]]
+agent_did      = "did:web:registry-a.playground.local:agents:rotating-publisher"
+public_key_b64 = "V/U68CudHahBq0B1x0+vUM8XQ4ZkmpGwe8G4EScYagI="
+algorithm      = "ed25519"
+valid_from     = 1780272000  # 2026-06-01T00:00:00Z — new key, overlaps
+
+# ECDSA-P256 pinned agent (registry now accepts ecdsa-p256 on publish).
+[[playground.pinned_keys]]
+agent_did      = "did:web:registry-a.playground.local:agents:p256-publisher"
+public_key_b64 = "BAkSM4c+1uo8uF3Kjtl6HByzTRglGmO/QMHPVZJdxAgoxSMgmllmO90hKczImK8x1BB7aOyEdog3uRvXx1StkF4="
+algorithm      = "ecdsa-p256"

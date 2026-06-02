@@ -16,9 +16,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from acdp import AcdpProducer
 from acdp_client import AcdpClient, FullContext, PublishResponse
 from acdp_client.models import StepEvent
+from acdp_client.signing import Producer
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,16 @@ class AgentTask(BaseModel):
     tags: list[str] = Field(default_factory=list)
     derived_from: list[str] = Field(default_factory=list)
     audience: list[str] = Field(default_factory=list)
+    contributors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
+    # ── extended body fields (acdp-py feature-parity, 2026-05) ──
+    # `data_refs` is a list of acdp-data-ref objects; `data_period` is a
+    # {"start","end"} RFC-3339 window; `expires_at` is an RFC-3339 stamp.
+    data_refs: list[dict[str, Any]] = Field(default_factory=list)
+    data_period: dict[str, str] | None = None
+    expires_at: str | None = None
+    schema_uri: str | None = None
+    idempotency_key: str | None = None  # optional Idempotency-Key on publish
     summary_chars: int = 500
     override_response: str | None = None  # bypass the LLM (used in tests/mocks)
 
@@ -59,7 +68,7 @@ class BasePlaygroundAgent:
 
     def __init__(
         self,
-        producer: AcdpProducer,
+        producer: Producer,
         client: AcdpClient,
         events: asyncio.Queue[StepEvent],
         run_id: str,
@@ -95,7 +104,14 @@ class BasePlaygroundAgent:
 
     # ── ACDP operations ─────────────────────────────────────────────────
 
-    async def publish(self, task: AgentTask, llm_result: str) -> AgentOutput:
+    def _publish_kwargs(self, task: AgentTask, llm_result: str) -> dict[str, Any]:
+        """Build the SDK ``build_publish_request`` kwargs from a task.
+
+        Optional fields are JSON-encoded strings where the SDK expects
+        them (``metadata``, ``data_refs``, ``data_period``); omitted
+        entirely when empty so the producer-content preimage (and thus
+        the content hash) stays minimal and stable.
+        """
         metadata: dict[str, Any] = {
             "agent_framework": self.framework,
             "run_id": self.run_id,
@@ -104,17 +120,94 @@ class BasePlaygroundAgent:
         if self.slug:
             metadata["agent_slug"] = self.slug
 
+        kwargs: dict[str, Any] = {
+            "title": task.title,
+            "context_type": task.context_type,
+            "visibility": task.visibility,
+            "summary": llm_result[: task.summary_chars],
+            "domain": task.domain,
+            "tags": task.tags or None,
+            "derived_from": task.derived_from or None,
+            "audience": task.audience or None,
+            "contributors": task.contributors or None,
+            "schema_uri": task.schema_uri,
+            "metadata": json.dumps(metadata),
+        }
+        if task.data_refs:
+            kwargs["data_refs"] = json.dumps(task.data_refs)
+        if task.data_period:
+            kwargs["data_period"] = json.dumps(task.data_period)
+        if task.expires_at:
+            kwargs["expires_at"] = task.expires_at
+        return kwargs
+
+    async def publish(self, task: AgentTask, llm_result: str) -> AgentOutput:
         req_json = self.producer.build_publish_request(
-            title=task.title,
-            context_type=task.context_type,
-            visibility=task.visibility,
-            summary=llm_result[: task.summary_chars],
-            domain=task.domain,
-            tags=task.tags or None,
-            derived_from=task.derived_from or None,
-            audience=task.audience or None,
-            metadata=json.dumps(metadata),
+            **self._publish_kwargs(task, llm_result)
         )
+        resp: PublishResponse = await self.client.publish(
+            req_json, idempotency_key=task.idempotency_key
+        )
+        req = json.loads(req_json)
+        out = AgentOutput(
+            ctx_id=resp.ctx_id,
+            lineage_id=resp.lineage_id,
+            version=resp.version,
+            title=task.title,
+            llm_response=llm_result,
+            content_hash=req["content_hash"],
+        )
+        await self._emit(
+            "acdp.publish",
+            ctx_id=out.ctx_id,
+            title=task.title,
+            derived_from=task.derived_from,
+            preview=llm_result[:100],
+        )
+        return out
+
+    async def supersede(
+        self,
+        previous_body_json: str,
+        task: AgentTask,
+        llm_result: str,
+        *,
+        expected_lineage_id: str | None = None,
+    ) -> AgentOutput:
+        """Publish a new version that supersedes ``previous_body_json``.
+
+        Uses the SDK's ``build_supersede_request`` so the lineage id is
+        carried forward and the version auto-incremented. When
+        ``expected_lineage_id`` is supplied it is sent as a concurrency
+        guard (``lin:sha256:<hex>``); the registry rejects it on a v1
+        body and honours it from v2 onward.
+        """
+        metadata: dict[str, Any] = {
+            "agent_framework": self.framework,
+            "run_id": self.run_id,
+            **(task.metadata or {}),
+        }
+        if self.slug:
+            metadata["agent_slug"] = self.slug
+
+        kwargs: dict[str, Any] = {
+            "previous_body_json": previous_body_json,
+            "title": task.title,
+            "summary": llm_result[: task.summary_chars],
+            "tags": task.tags or None,
+            "domain": task.domain,
+            "metadata": json.dumps(metadata),
+        }
+        if task.data_refs:
+            kwargs["data_refs"] = json.dumps(task.data_refs)
+        if task.data_period:
+            kwargs["data_period"] = json.dumps(task.data_period)
+        if task.expires_at:
+            kwargs["expires_at"] = task.expires_at
+        if expected_lineage_id is not None:
+            kwargs["expected_lineage_id"] = expected_lineage_id
+
+        req_json = self.producer.build_supersede_request(**kwargs)
         resp: PublishResponse = await self.client.publish(req_json)
         req = json.loads(req_json)
         out = AgentOutput(

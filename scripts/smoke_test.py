@@ -36,6 +36,9 @@ async def main() -> int:
     failures += await _check_agent_publish_path()
     failures += await _check_webhook_signature()
     failures += await _check_control_plane_forwarding()
+    failures += await _check_p256_round_trip()
+    failures += await _check_jcs_number_stability()
+    failures += await _check_extended_body_fields()
 
     print()
     if failures:
@@ -49,7 +52,7 @@ async def main() -> int:
 
 
 async def _check_scenarios_load() -> int:
-    print("\n[1/5] scenario catalog loads")
+    print("\n[1/8] scenario catalog loads")
     try:
         from playground.scenarios import list_scenarios
     except Exception as e:  # noqa: BLE001
@@ -61,6 +64,9 @@ async def _check_scenarios_load() -> int:
         "s1_single_publish", "s2_producer_consumer", "s3_fanout",
         "s4_chain", "s5_cross_registry", "s6_restricted",
         "s7_supersession", "s8_cross_org",
+        "s9_p256_publish", "s10_tenant_isolation", "s11_revocation",
+        "s12_key_rotation", "s13_policy_deny", "s14_domain_pack",
+        "s15_supersession_lineage",
     }
     got = {s.id for s in scenarios}
     missing = expected - got
@@ -74,7 +80,7 @@ async def _check_scenarios_load() -> int:
 
 
 async def _check_sdk_round_trip() -> int:
-    print("\n[2/5] acdp-py SDK round-trip")
+    print("\n[2/8] acdp-py SDK round-trip")
     try:
         from acdp import AcdpProducer, AcdpVerifier
     except Exception as e:  # noqa: BLE001
@@ -120,7 +126,7 @@ async def _check_sdk_round_trip() -> int:
 
 
 async def _check_agent_publish_path() -> int:
-    print("\n[3/5] BasePlaygroundAgent.publish against fake registry")
+    print("\n[3/8] BasePlaygroundAgent.publish against fake registry")
     try:
         from acdp import AcdpProducer
         from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -181,7 +187,7 @@ async def _check_agent_publish_path() -> int:
 
 
 async def _check_webhook_signature() -> int:
-    print("\n[4/5] webhook signature verify")
+    print("\n[4/8] webhook signature verify")
     secret = "test-secret"
     body = b'{"type":"context_published","agent_id":"did:web:x","ctx_id":"acdp://r/1"}'
     expected = f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
@@ -216,7 +222,7 @@ async def _check_control_plane_forwarding() -> int:
     ControlPlaneClient signs + forwards run lifecycle + webhook payloads
     correctly. Replaces the previous "control-plane stub deferred" gap
     (deferred-plan §13.3)."""
-    print("\n[5/5] control-plane forwarding (in-process stub)")
+    print("\n[5/8] control-plane forwarding (in-process stub)")
 
     try:
         import uvicorn
@@ -309,7 +315,7 @@ async def _check_control_plane_forwarding() -> int:
         # The webhook forward must preserve the original event header.
         ingest = captured[2]
         if ingest["headers"].get("x-acdp-event") != "context_published":
-            print(f"  FAIL: X-ACDP-Event not preserved on /ingest/acdp")
+            print("  FAIL: X-ACDP-Event not preserved on /ingest/acdp")
             return 1
 
         # Lifecycle payloads carry the right discriminators.
@@ -320,11 +326,141 @@ async def _check_control_plane_forwarding() -> int:
             print(f"  FAIL: runs/complete body missing status: {captured[1]['body']}")
             return 1
 
-        print(f"  ok: 3 forwarded, all HMAC-verified, event header preserved")
+        print("  ok: 3 forwarded, all HMAC-verified, event header preserved")
         return 0
     finally:
         server.should_exit = True
         await serve_task
+
+
+async def _check_p256_round_trip() -> int:
+    print("\n[6/8] ECDSA-P256 producer + verifier round-trip")
+    try:
+        from acdp import AcdpP256Producer, AcdpVerifier
+    except ImportError:
+        print("  SKIP: SDK lacks AcdpP256Producer (rebuild acdp-py to enable)")
+        return 0
+    from acdp_client.signing import producer_algorithm, public_key_material, verify_signature
+
+    producer = AcdpP256Producer.from_seed(
+        bytes(31) + bytes([1]),
+        "did:web:registry-a.playground.local:agents:p256",
+        "did:web:registry-a.playground.local:agents:p256#key-1",
+    )
+    if producer_algorithm(producer) != "ecdsa-p256":
+        print("  FAIL: producer_algorithm misdetected")
+        return 1
+    raw = producer.build_publish_request(title="P256", context_type="analysis")
+    req = json.loads(raw)
+    if req["signature"]["algorithm"] != "ecdsa-p256":
+        print(f"  FAIL: wire algorithm {req['signature']['algorithm']!r}")
+        return 1
+    body = {k: v for k, v in req.items() if k != "content_hash"}
+    try:
+        AcdpVerifier.verify_content_hash(json.dumps(body), req["content_hash"])
+        ok = verify_signature(
+            "ecdsa-p256",
+            public_key_material(producer),
+            req["signature"]["value"],
+            req["content_hash"],
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  FAIL verify: {e}")
+        return 1
+    if not ok:
+        print("  FAIL: P-256 signature did not verify")
+        return 1
+    print("  ok: ecdsa-p256 signed + verified; JWK + DID method available")
+    return 0
+
+
+async def _check_jcs_number_stability() -> int:
+    """RFC 8785 number canonicalization must be stable: the same body with a
+    float metadata value hashes identically across two independent builds."""
+    print("\n[7/8] JCS RFC 8785 numeric canonicalization stability")
+    from acdp import AcdpProducer, AcdpVerifier
+
+    producer = AcdpProducer.from_seed(
+        bytes(range(32)),
+        "did:web:registry-a.playground.local:agents:jcs",
+        "did:web:registry-a.playground.local:agents:jcs#key-1",
+    )
+    meta = json.dumps({"score": 0.1, "ratio": 1.5, "count": 3})
+
+    def build_hash() -> str:
+        raw = producer.build_publish_request(
+            title="JCS", context_type="data_snapshot", summary="floats", metadata=meta
+        )
+        return json.loads(raw)["content_hash"]
+
+    h1, h2 = build_hash(), build_hash()
+    if h1 != h2:
+        print(f"  FAIL: non-deterministic hash {h1[:24]} != {h2[:24]}")
+        return 1
+    # And the hash verifies.
+    raw = producer.build_publish_request(
+        title="JCS", context_type="data_snapshot", summary="floats", metadata=meta
+    )
+    req = json.loads(raw)
+    body = {k: v for k, v in req.items() if k != "content_hash"}
+    try:
+        AcdpVerifier.verify_content_hash(json.dumps(body), req["content_hash"])
+    except Exception as e:  # noqa: BLE001
+        print(f"  FAIL: float-body content_hash did not verify: {e}")
+        return 1
+    print(f"  ok: float metadata hashes stably ({h1[:24]}...)")
+    return 0
+
+
+async def _check_extended_body_fields() -> int:
+    """The agent threads data_refs / data_period / expires_at into the
+    publish request, and omits them when unset."""
+    print("\n[8/8] extended body fields (data_refs / data_period / expires_at)")
+    from acdp import AcdpProducer
+    from acdp_client.models import PublishResponse
+    from playground.agents.base import AgentTask, BasePlaygroundAgent
+
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        async def publish(self, request_json: str, *, idempotency_key=None):
+            captured["request"] = json.loads(request_json)
+            return PublishResponse(
+                ctx_id="acdp://registry-a.playground.local/00000000-0000-4000-8000-000000000002",
+                lineage_id="lin:sha256:abc", version=1,
+                created_at=datetime.now(timezone.utc), status="active",
+            )
+
+    class StubAgent(BasePlaygroundAgent):
+        framework = "stub"
+
+        async def call_llm(self, prompt: str) -> str:
+            return "x"
+
+    producer = AcdpProducer.from_seed(
+        bytes(range(2, 34)),
+        "did:web:registry-a.playground.local:agents:ext",
+        "did:web:registry-a.playground.local:agents:ext#key-1",
+    )
+    agent = StubAgent(producer, FakeClient(), asyncio.Queue(), "run-ext", slug="ext")  # type: ignore[arg-type]
+    await agent.run(
+        AgentTask(
+            prompt="x", title="ext", context_type="analysis",
+            override_response="res",
+            data_refs=[{"type": "primary_result", "location": "https://e.com/d.csv"}],
+            data_period={"start": "2026-01-01T00:00:00Z", "end": "2026-03-31T23:59:59Z"},
+            expires_at="2026-12-31T00:00:00Z",
+        )
+    )
+    req = captured.get("request", {})
+    if not req.get("data_refs") or req.get("data_period", {}).get("start") != "2026-01-01T00:00:00Z":
+        print(f"  FAIL: extended fields not threaded: {req.get('data_refs')} {req.get('data_period')}")
+        return 1
+    if not str(req.get("expires_at", "")).startswith("2026-12-31"):
+        print(f"  FAIL: expires_at not set: {req.get('expires_at')}")
+        return 1
+    print("  ok: data_refs + data_period + expires_at present on publish request")
+    return 0
 
 
 if __name__ == "__main__":

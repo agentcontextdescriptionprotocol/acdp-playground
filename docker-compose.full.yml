@@ -1,0 +1,62 @@
+# Full-stack overlay: playground + two registries + the control plane.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml up
+#   (or `make up-full`)
+#
+# The base compose file runs standalone (playground + registries). This
+# overlay adds the NestJS control plane as a first-class service and
+# points the playground at it, so run-lifecycle notifications and
+# forwarded webhooks land on `/ingest/acdp` and the auth/revocation
+# scenarios have a real IdP to talk to.
+#
+# The control plane runs DB-less (AUTH_PERSISTENCE=memory,
+# STREAM_HUB_STRATEGY=memory) — fine for a single-instance demo; switch
+# to postgres/redis for anything durable.
+
+services:
+  control-plane:
+    build:
+      context: ../acdp-control-plane
+      dockerfile: Dockerfile
+    ports: ["3001:3001"]
+    environment:
+      PORT: "3001"
+      HOST: 0.0.0.0
+      NODE_ENV: production
+      AUTH_PERSISTENCE: memory
+      STREAM_HUB_STRATEGY: memory
+      # IdP — issue/introspect/revoke tokens.
+      TOKEN_ISSUANCE_ENABLED: "true"
+      JWT_AUTHORITY: control-plane.playground.local
+      JWT_SIGNING_ALG: ${CONTROL_PLANE_JWT_SIGNING_ALG:-HS256}
+      # ≥32 bytes for HS256. Override in .env for anything real.
+      JWT_SECRET: ${CONTROL_PLANE_JWT_SECRET:-cGxheWdyb3VuZC1jb250cm9sLXBsYW5lLWp3dC1zZWNyZXQtMzJi}
+      JWT_TTL_SECONDS: "3600"
+      CHALLENGE_TTL_SECONDS: "300"
+      # Webhook ingest HMAC — MUST equal the playground's
+      # CONTROL_PLANE_HMAC_SECRET (it signs forwarded webhooks with it).
+      WEBHOOK_SECRET: ${CONTROL_PLANE_HMAC_SECRET:-playground-cp-secret}
+      # Bearer API keys; the admin subset gates introspection/feed/reload.
+      AUTH_API_KEYS: ${CONTROL_PLANE_API_KEY:-playground-cp-api-key}
+      AUTH_ADMIN_API_KEYS: ${CONTROL_PLANE_ADMIN_TOKEN:-playground-cp-admin}
+      # Policy + domain packs (P7). `static` needs no OPA sidecar.
+      POLICY_BACKEND: ${POLICY_BACKEND:-static}
+      DOMAIN_PACKS: ${DOMAIN_PACKS:-finance}
+      # Optional: agent→tenant bindings and pinned keys (comma-separated).
+      TENANT_AGENTS: ${CONTROL_PLANE_TENANT_AGENTS:-}
+      CONTROL_PLANE_PINNED_KEYS: ${CONTROL_PLANE_PINNED_KEYS:-}
+    healthcheck:
+      # node:alpine ships busybox wget, not curl.
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  playground:
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:3001
+      CONTROL_PLANE_HMAC_SECRET: ${CONTROL_PLANE_HMAC_SECRET:-playground-cp-secret}
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:-playground-cp-admin}
+    depends_on:
+      control-plane:
+        condition: service_healthy

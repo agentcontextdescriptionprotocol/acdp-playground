@@ -48,6 +48,9 @@ jobs:
         env:
           UV_LINK_MODE: copy
 
+      - name: Lint (ruff)
+        run: uv run ruff check acdp_client playground scripts tests
+
       - name: Run pytest
         run: uv run pytest --tb=short
         env:
@@ -55,7 +58,7 @@ jobs:
           # the unit suite (smoke check uses an in-process stub).
           LLM_PROVIDER: mock
 
-      - name: Run smoke test (5/5 checks including in-process CP stub)
+      - name: Run smoke test (8/8 checks incl. P-256, JCS, in-process CP stub)
         run: uv run python scripts/smoke_test.py
         env:
           LLM_PROVIDER: mock

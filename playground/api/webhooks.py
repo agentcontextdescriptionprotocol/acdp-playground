@@ -52,6 +52,17 @@ async def receive_acdp_webhook(request: Request):
         log.warning("webhook payload didn't match WebhookEvent: %s payload=%s", e, payload)
         return
 
+    # Tenant + dedup id ride in the headers, not the signed body
+    # (RFC-ACDP-0008 §6.4). Lift them onto the event so the SSE stream
+    # and downstream forward see them.
+    headers = request.headers
+    if event.tenant_id is None:
+        event.tenant_id = headers.get("x-tenant-id")
+    if event.event_id is None:
+        event.event_id = headers.get("x-acdp-event-id")
+    if event.run_id is None:
+        event.run_id = headers.get("x-run-id")
+
     # Fan into the SSE queue if the run is live.
     if event.run_id:
         queue = get_queue(event.run_id)
@@ -65,4 +76,6 @@ async def receive_acdp_webhook(request: Request):
     cp = get_control_plane(settings)
     import asyncio
 
-    asyncio.create_task(cp.forward_webhook(body, dict(request.headers)))
+    asyncio.create_task(
+        cp.forward_webhook(body, dict(request.headers), tenant_id=event.tenant_id)
+    )

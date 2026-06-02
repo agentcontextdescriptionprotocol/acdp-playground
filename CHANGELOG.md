@@ -4,6 +4,55 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-01 — Playground V2 sibling sync
+
+The playground now exercises the features that landed across the RFC,
+the Rust SDK, the registry, and the control plane since late May. See
+`plans/2026-06-01-playground-sibling-sync.md` for the full plan.
+
+### Client / SDK
+
+- **ECDSA-P256 signing.** `acdp_client.signing` abstracts over
+  `AcdpProducer` (Ed25519) and `AcdpP256Producer` (P-256); the token
+  manager posts the matching `algorithm` to `/auth/token` and the
+  verifier dispatches to the right path. `make build-sdk` rebuilds the
+  compiled `acdp` extension to pick up the new producer.
+- **Cursor pagination.** `AcdpClient.search(cursor=...)` +
+  `search_all(...)`; the latter continues through an empty-but-cursored
+  page (RFC-ACDP-0005 §2.3) and surfaces `invalid_cursor` /
+  `cursor_expired` as `CursorError`.
+- **Token revocation.** `TokenManager.revoke(...)` (RFC 7009) +
+  unverified `tenant`/`jti` claim surfacing for telemetry.
+- **Tenant header policy.** `AcdpClient(tenant_id=, tenant_header_mode=)`
+  — `X-Tenant-Id` is a fallback only and is suppressed for
+  bearer-authenticated requests so it never contradicts the JWT claim.
+- **Extended body fields.** Agents thread `data_refs` / `data_period` /
+  `expires_at`; supersession uses `expected_lineage_id` via
+  `build_supersede_request`.
+
+### Control plane bridge
+
+- Forwards `X-Tenant-Id` + `X-ACDP-Event-Id` on webhooks and run
+  notifications; honours a cooperative `Retry-After` (RFC 9110).
+- Operator surface: `introspect` (RFC 7662), `revocations` feed,
+  `reload_pinned_keys` — gated on `CONTROL_PLANE_ADMIN_TOKEN`.
+- `docker-compose.full.yml` + `make up-full` run the CP as a
+  first-class service (DB-less memory mode).
+
+### Scenarios + tooling
+
+- New scenarios **S9–S15**: P-256 publish, tenant isolation, revocation,
+  key rotation + admin reload, policy/authz, domain-pack gating, and
+  supersession with a lineage guard.
+- `gen_keys.py --algorithm ecdsa-p256` emits SEC1/JWK/`verificationMethod`;
+  `pinned_keys_diff.py` encodes algorithm + validity windows.
+- Registry configs gain `auth.tenant_agents`, pinned-key rotation
+  windows, and documented EdDSA / revocation-feed blocks.
+- `smoke_test.py` grows to 8 checks (adds P-256, JCS float stability,
+  extended body fields); 44 new unit tests cover signing, cursor
+  pagination, tenant headers, revocation, Retry-After, pinned-key
+  windows, and the control-plane bridge.
+
 ## 2026-05-26 — Auth, security, and tenancy hardening
 
 A coordinated pass across the control plane and the registry that

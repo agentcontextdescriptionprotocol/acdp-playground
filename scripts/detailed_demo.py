@@ -276,8 +276,8 @@ async def step_4_verify_lineage(client: AcdpClient, alpha_lineage_id: str, beta_
 
     sub("lineage edges we formed this run")
     print(f"  {alpha_ctx_id}")
-    print(f"       │ derived_from")
-    print(f"       ▼")
+    print("       │ derived_from")
+    print("       ▼")
     print(f"  {beta_ctx_id}")
 
 

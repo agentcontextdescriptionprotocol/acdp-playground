@@ -57,8 +57,8 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
         # AcdpClient.resolve uses the authority_map to fetch from registry-a.
         out_b = await agent_b.run(
             AgentTask(
-                prompt=f"Given the source, write a 4-sentence analysis of "
-                       f"shipping investment implications.",
+                prompt="Given the source, write a 4-sentence analysis of "
+                       "shipping investment implications.",
                 title=f"Cross-registry derivative — {topic}",
                 context_type="analysis",
                 domain="geopolitics",

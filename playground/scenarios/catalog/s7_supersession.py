@@ -62,7 +62,7 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
         # revisions.
         v2 = await agent.run(
             AgentTask(
-                prompt=f"Revise the v1 into a sharper v2 with one extra bullet.",
+                prompt="Revise the v1 into a sharper v2 with one extra bullet.",
                 title=f"{topic} — v2",
                 context_type="data_snapshot",
                 tags=["draft", "v2"],

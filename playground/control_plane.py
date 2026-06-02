@@ -1,9 +1,22 @@
 """Optional bridge to the ACDP control plane.
 
-When ``CONTROL_PLANE_URL`` is empty (the default), every method is a
-no-op. When it's set, run lifecycle notifications and forwarded
-registry webhooks are sent to the control plane with an HMAC-SHA256
-signature in ``X-ACDP-Signature: sha256=<hex>``.
+When ``CONTROL_PLANE_URL`` is empty (the default), the forwarding
+methods are no-ops. When it's set, run-lifecycle notifications and
+forwarded registry webhooks are sent to the control plane with an
+HMAC-SHA256 signature in ``X-ACDP-Signature: sha256=<hex>``.
+
+Beyond fire-and-forget forwarding, this client also drives the CP's
+operator surface when an admin token is configured:
+
+* ``introspect`` — RFC 7662 token introspection (``POST /auth/introspect``)
+* ``revocations`` — cross-issuer revocation feed (``GET /auth/revocations``)
+* ``reload_pinned_keys`` — hot key-rotation (``POST /admin/pinned-keys/reload``)
+
+Forwarded webhooks preserve the registry's ``X-ACDP-Event``,
+``X-ACDP-Event-Id`` (retry-stable dedup key) and carry an
+``X-Tenant-Id`` so the multi-tenant CP attributes the event correctly.
+The tenant is a routing signal carried in the header — never in the
+signed body (RFC-ACDP-0008 §6.4).
 """
 
 from __future__ import annotations
@@ -13,14 +26,20 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from playground.config import Settings
+from playground.retry_after import parse_retry_after
 
 log = logging.getLogger(__name__)
+
+# Transient upstream statuses worth one cooperative retry.
+_RETRYABLE = {429, 502, 503, 504}
+_MAX_RETRY_DELAY = 30.0  # cap a cooperative Retry-After wait
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -40,6 +59,10 @@ class ControlPlaneClient:
     def enabled(self) -> bool:
         return bool(self._settings.control_plane_url)
 
+    @property
+    def _base(self) -> str:
+        return self._settings.control_plane_url.rstrip("/")
+
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None:
             async with self._lock:
@@ -52,6 +75,8 @@ class ControlPlaneClient:
             await self._http.aclose()
             self._http = None
 
+    # ── core POST with HMAC + one cooperative retry ──────────────────────
+
     async def _post(
         self,
         path: str,
@@ -61,7 +86,7 @@ class ControlPlaneClient:
     ) -> None:
         if not self.enabled:
             return
-        url = self._settings.control_plane_url.rstrip("/") + path
+        url = self._base + path
         headers = {"Content-Type": "application/json"}
         if self._settings.control_plane_hmac_secret:
             headers["X-ACDP-Signature"] = _sign(
@@ -72,6 +97,13 @@ class ControlPlaneClient:
         try:
             client = await self._client()
             r = await client.post(url, content=body, headers=headers)
+            if r.status_code in _RETRYABLE:
+                delay = parse_retry_after(
+                    r.headers.get("retry-after"), now=time.time()
+                )
+                if delay is not None:
+                    await asyncio.sleep(min(delay, _MAX_RETRY_DELAY))
+                    r = await client.post(url, content=body, headers=headers)
             if not r.is_success:
                 log.warning(
                     "control-plane %s -> %s: %s", path, r.status_code, r.text[:200]
@@ -87,6 +119,8 @@ class ControlPlaneClient:
         run_id: str,
         scenario_id: str,
         inputs: dict[str, Any],
+        *,
+        tenant_id: str | None = None,
     ) -> None:
         payload = {
             "run_id": run_id,
@@ -94,13 +128,19 @@ class ControlPlaneClient:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "inputs": inputs,
         }
-        await self._post("/runs/started", json.dumps(payload).encode("utf-8"))
+        await self._post(
+            "/runs/started",
+            json.dumps(payload).encode("utf-8"),
+            extra_headers=_tenant_header(tenant_id),
+        )
 
     async def notify_run_complete(
         self,
         run_id: str,
         status: str,
         result: dict[str, Any] | None,
+        *,
+        tenant_id: str | None = None,
     ) -> None:
         payload = {
             "run_id": run_id,
@@ -108,7 +148,11 @@ class ControlPlaneClient:
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "result": result,
         }
-        await self._post(f"/runs/{run_id}/complete", json.dumps(payload).encode("utf-8"))
+        await self._post(
+            f"/runs/{run_id}/complete",
+            json.dumps(payload).encode("utf-8"),
+            extra_headers=_tenant_header(tenant_id),
+        )
 
     # ── webhook forwarding ──────────────────────────────────────────────
 
@@ -116,17 +160,105 @@ class ControlPlaneClient:
         self,
         raw_body: bytes,
         headers: dict[str, str],
+        *,
+        tenant_id: str | None = None,
     ) -> None:
         """Forward a registry webhook verbatim to the control plane.
 
         Re-signs with the control plane's secret if configured (the
-        registry's signature wouldn't validate there). Preserves
-        X-ACDP-Event so the control plane sees the event type.
+        registry's signature wouldn't validate there). Preserves the
+        event type, the retry-stable dedup id, and the run correlation
+        id, and stamps an ``X-Tenant-Id`` for tenant attribution.
         """
+        lower = {k.lower(): v for k, v in headers.items()}
         extra: dict[str, str] = {}
-        if event := headers.get("x-acdp-event") or headers.get("X-ACDP-Event"):
+        if event := lower.get("x-acdp-event"):
             extra["X-ACDP-Event"] = event
+        if event_id := lower.get("x-acdp-event-id"):
+            extra["X-ACDP-Event-Id"] = event_id
+        if run_id := lower.get("x-run-id"):
+            extra["X-Run-Id"] = run_id
+        # An explicit tenant arg wins; else honour an inbound header.
+        tenant = tenant_id or lower.get("x-tenant-id")
+        if tenant:
+            extra["X-Tenant-Id"] = tenant
         await self._post("/ingest/acdp", raw_body, extra_headers=extra)
+
+    # ── admin / operator surface (requires control_plane_admin_token) ────
+
+    def _admin_headers(self) -> dict[str, str] | None:
+        token = self._settings.control_plane_admin_token
+        if not token:
+            return None
+        return {"Authorization": f"Bearer {token}"}
+
+    async def introspect(self, token: str) -> dict[str, Any] | None:
+        """RFC 7662 introspection — returns the decoded claims or None.
+
+        Requires an admin token. Returns ``{"active": false}`` shape when
+        the CP reports the token inactive/revoked.
+        """
+        admin = self._admin_headers()
+        if not self.enabled or admin is None:
+            return None
+        url = self._base + "/auth/introspect"
+        headers = {**admin, "Content-Type": "application/json"}
+        try:
+            client = await self._client()
+            r = await client.post(url, json={"token": token}, headers=headers)
+        except httpx.HTTPError as e:
+            log.warning("control-plane introspect failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane introspect -> %s", r.status_code)
+            return None
+        return r.json()
+
+    async def revocations(
+        self, *, since_ms: int = 0, limit: int = 200
+    ) -> dict[str, Any] | None:
+        """Read the cross-issuer revocation feed (admin-only).
+
+        Returns ``{"entries": [...], "next_cursor": <int|null>}`` or None
+        when disabled/unauthorized.
+        """
+        admin = self._admin_headers()
+        if not self.enabled or admin is None:
+            return None
+        url = self._base + "/auth/revocations"
+        try:
+            client = await self._client()
+            r = await client.get(
+                url, params={"since": since_ms, "limit": limit}, headers=admin
+            )
+        except httpx.HTTPError as e:
+            log.warning("control-plane revocations failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane revocations -> %s", r.status_code)
+            return None
+        return r.json()
+
+    async def reload_pinned_keys(self) -> dict[str, Any] | None:
+        """Trigger a hot reload of the CP pinned-key directory (admin)."""
+        admin = self._admin_headers()
+        if not self.enabled or admin is None:
+            return None
+        url = self._base + "/admin/pinned-keys/reload"
+        try:
+            client = await self._client()
+            r = await client.post(url, headers=admin)
+        except httpx.HTTPError as e:
+            log.warning("control-plane pinned-key reload failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane pinned-key reload -> %s", r.status_code)
+            return None
+        return r.json()
+
+
+def _tenant_header(tenant_id: str | None) -> dict[str, str] | None:
+    return {"X-Tenant-Id": tenant_id} if tenant_id else None
 
 
 _singleton: ControlPlaneClient | None = None

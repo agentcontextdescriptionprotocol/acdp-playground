@@ -52,7 +52,7 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
 
         cons_out = await consumer.run(
             AgentTask(
-                prompt=f"Given the raw data, produce a 3-bullet executive analysis.",
+                prompt="Given the raw data, produce a 3-bullet executive analysis.",
                 title=f"Analysis — {topic}",
                 context_type="analysis",
                 tags=["analysis"],

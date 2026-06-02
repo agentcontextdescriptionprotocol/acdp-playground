@@ -83,11 +83,31 @@ class SearchResponse(_Open):
     # The registry returns this list under the key `matches`; expose
     # it under both names so callers can use whichever reads better.
     matches: list[SearchHit] = Field(default_factory=list)
+    total_estimate: int | None = None
     next_cursor: str | None = None
 
     @property
     def results(self) -> list[SearchHit]:
         return self.matches
+
+
+# Cursor error codes per RFC-ACDP-0005 / RFC-ACDP-0007 §4.
+CURSOR_ERROR_CODES = frozenset({"invalid_cursor", "cursor_expired"})
+
+
+class CursorError(RuntimeError):
+    """A pagination cursor was rejected by the registry.
+
+    Carries the wire error ``code`` (``invalid_cursor`` or
+    ``cursor_expired``) so callers can decide whether to restart
+    pagination from the beginning (expired) or treat the cursor as a
+    bug (invalid).
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
 
 
 # ── Webhook + SSE event types ────────────────────────────────────────────
@@ -101,10 +121,21 @@ WebhookType = Literal[
 
 
 class WebhookEvent(_Open):
-    """Event shape posted by acdp-registry-rs to subscribers."""
+    """Event shape posted by acdp-registry-rs to subscribers.
+
+    The registry wraps each event in a small envelope (``event_id`` +
+    ``schema_version``) and carries the tenant out-of-band in the
+    ``X-Tenant-Id`` header (never in the signed body). ``event_id`` is
+    retry-stable so downstream consumers can de-duplicate redeliveries.
+    ``tenant_id`` is populated by the receiver from the header, not the
+    wire body.
+    """
 
     type: WebhookType
-    agent_id: str
+    # `context_published` always carries an agent; `context_retrieved` and
+    # `search_executed` may be agent-less (CP REG fix 4345daf), so this is
+    # optional rather than required.
+    agent_id: str | None = None
     registry_authority: str | None = None
     run_id: str | None = None
     ctx_id: str | None = None
@@ -114,6 +145,10 @@ class WebhookEvent(_Open):
     version: int | None = None
     created_at: datetime | None = None
     derived_from: list[str] = Field(default_factory=list)
+    # Envelope / routing metadata.
+    event_id: str | None = None
+    schema_version: str | None = None
+    tenant_id: str | None = None
 
 
 StepEventType = Literal[
@@ -122,6 +157,11 @@ StepEventType = Literal[
     "acdp.publish",
     "acdp.retrieve",
     "acdp.search",
+    "acdp.verify",
+    "auth.token",
+    "auth.revoke",
+    "policy.check",
+    "scenario.note",
     "run.started",
     "run.complete",
     "run.error",
@@ -146,6 +186,8 @@ class StepEvent(_Open):
     scenario_id: str | None = None
     framework: str | None = None
     registry_authority: str | None = None
+    tenant_id: str | None = None
+    event_id: str | None = None
 
     @classmethod
     def from_webhook(cls, run_id: str, ts: str, event: WebhookEvent) -> "StepEvent":
@@ -162,4 +204,6 @@ class StepEvent(_Open):
             ctx_id=event.ctx_id,
             derived_from=event.derived_from,
             registry_authority=event.registry_authority,
+            tenant_id=event.tenant_id,
+            event_id=event.event_id,
         )

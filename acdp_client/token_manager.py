@@ -37,6 +37,9 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -45,10 +48,33 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from acdp_client.signing import producer_algorithm
+
 if TYPE_CHECKING:
-    from acdp import AcdpProducer
+    from acdp_client.signing import Producer
 
 log = logging.getLogger(__name__)
+
+
+def _decode_unverified_claims(token: str) -> dict[str, object]:
+    """Best-effort decode of a JWT's payload **without** verifying it.
+
+    The registry/control plane own verification; the playground only
+    peeks at non-authoritative claims (``tenant``, ``jti``) for
+    telemetry and to drive revocation. Returns ``{}`` on any decode
+    problem so callers never crash on an opaque token.
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+    except IndexError:
+        return {}
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(payload_b64 + padding)
+        claims = json.loads(raw)
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 # ── refresh telemetry ────────────────────────────────────────────────────
@@ -103,11 +129,18 @@ class TokenAuthError(TokenError):
 
 @dataclass(frozen=True)
 class CachedToken:
-    """A token paired with its registry-declared unix-seconds expiry."""
+    """A token paired with its registry-declared unix-seconds expiry.
+
+    ``tenant`` and ``jti`` are read from the (unverified) JWT payload for
+    observability and to drive revocation; they are never treated as
+    authoritative by the playground — the issuing registry/CP own that.
+    """
 
     token: str
     token_type: str
     expires_at: int  # unix seconds
+    tenant: str | None = None
+    jti: str | None = None
 
     def is_fresh(self, leeway_seconds: int) -> bool:
         return time.time() + leeway_seconds < self.expires_at
@@ -149,7 +182,7 @@ class TokenManager:
 
     async def token_for(
         self,
-        producer: "AcdpProducer",
+        producer: "Producer",
         registry_base_url: str,
     ) -> CachedToken:
         """Return a fresh token for ``(producer, registry)``.
@@ -177,7 +210,7 @@ class TokenManager:
 
     def invalidate(
         self,
-        producer: "AcdpProducer",
+        producer: "Producer",
         registry_base_url: str,
         *,
         reason: RefreshReason = RefreshReason.REACTIVE_401,
@@ -229,7 +262,7 @@ class TokenManager:
 
     async def _mint(
         self,
-        producer: "AcdpProducer",
+        producer: "Producer",
         registry_base_url: str,
         *,
         reason: RefreshReason,
@@ -280,7 +313,9 @@ class TokenManager:
             )
             raise ChallengeError(f"malformed challenge: {e}: {ch}") from None
 
-        # Step 2 — sign with the agent's Ed25519 key (via the SDK)
+        # Step 2 — sign with the agent's key (via the SDK). The signer may
+        # be Ed25519 or ECDSA-P256; the wire `algorithm` must match.
+        algorithm = producer_algorithm(producer)
         signature = producer.sign_challenge(signing_input)
 
         # Step 3 — exchange signature for JWT
@@ -290,7 +325,7 @@ class TokenManager:
             "key_id": producer.key_id,
             "nonce": nonce,
             "expires_at": expires_at,
-            "algorithm": "ed25519",
+            "algorithm": algorithm,
             "signature": signature,
         }
         try:
@@ -310,10 +345,15 @@ class TokenManager:
             )
         tk = tk_resp.json()
         try:
+            token = tk["token"]
+            claims = _decode_unverified_claims(token)
+            tenant = claims.get("tenant")
             cached = CachedToken(
-                token=tk["token"],
+                token=token,
                 token_type=tk.get("token_type", "Bearer"),
                 expires_at=int(tk["expires_at"]),
+                tenant=tenant if isinstance(tenant, str) else None,
+                jti=claims.get("jti") if isinstance(claims.get("jti"), str) else None,
             )
         except (KeyError, ValueError) as e:
             self._log_failure(
@@ -328,8 +368,10 @@ class TokenManager:
             extra={
                 "event": "acdp.token.mint.success",
                 "refresh_reason": reason.value,
+                "algorithm": algorithm,
                 "agent_did": producer.agent_did,
                 "registry_base_url": registry_base_url,
+                "tenant": cached.tenant,
                 "expires_at": cached.expires_at,
                 "ttl_seconds": ttl_seconds,
                 "elapsed_ms": elapsed_ms,
@@ -337,10 +379,64 @@ class TokenManager:
         )
         return cached
 
+    # ── revocation (RFC 7009 semantics; registry POST /auth/token/revoke) ──
+
+    async def revoke(
+        self,
+        producer: "Producer",
+        registry_base_url: str,
+    ) -> bool:
+        """Revoke the cached token for ``(producer, registry)``.
+
+        Mints a token first if none is cached (so there is a ``jti`` to
+        revoke), then calls ``POST /auth/token/revoke`` authenticated as
+        the token owner. Drops the token from the cache afterwards so the
+        next request mints a fresh one. Returns ``True`` on a 2xx/204.
+
+        The registry enforces an owner-match gate: an agent can only
+        revoke tokens issued to its own DID.
+        """
+        base = registry_base_url.rstrip("/")
+        cached = await self.token_for(producer, base)
+        if not cached.jti:
+            log.warning(
+                "cannot revoke: token for %s carries no jti", producer.agent_did
+            )
+            return False
+        url = f"{base}/auth/token/revoke"
+        headers = {
+            "Authorization": f"Bearer {cached.token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = await self._http.post(url, json={"jti": cached.jti}, headers=headers)
+        except httpx.HTTPError as e:
+            log.warning("token revoke %s failed: %s", url, e)
+            self.invalidate(producer, base, reason=RefreshReason.REACTIVE_401)
+            return False
+        # Always drop the local copy — revoked or not, we don't want to
+        # keep handing out a token we just tried to kill.
+        self.invalidate(producer, base, reason=RefreshReason.REACTIVE_401)
+        if resp.is_success:
+            log.info(
+                "token revoked",
+                extra={
+                    "event": "acdp.token.revoke",
+                    "agent_did": producer.agent_did,
+                    "registry_base_url": base,
+                    "jti": cached.jti,
+                },
+            )
+            return True
+        log.warning(
+            "token revoke %s -> %s: %s", url, resp.status_code, resp.text[:200]
+        )
+        return False
+
     def _log_failure(
         self,
         reason: RefreshReason,
-        producer: "AcdpProducer",
+        producer: "Producer",
         registry_base_url: str,
         failure_kind: str,
         detail: str,

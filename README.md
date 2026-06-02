@@ -19,11 +19,12 @@ playground/
   events.py                   # in-process SSE bus
   control_plane.py            # no-op when CONTROL_PLANE_URL unset
 scripts/
-  smoke_test.py               # 5-check offline wiring + in-process CP stub
-  gen_keys.py                 # deterministic agent identity material
+  smoke_test.py               # 8-check offline wiring (incl. P-256, JCS, CP stub)
+  gen_keys.py                 # deterministic agent identity material (ed25519 / p256)
   pinned_keys_diff.py         # translate registry [playground]pinned_keys → CONTROL_PLANE_PINNED_KEYS env
 config/                       # registry-a.toml, registry-b.toml
 docker-compose.yml            # playground + two registries
+docker-compose.full.yml       # overlay adding the control plane (make up-full)
 ```
 
 ## Quickstart
@@ -61,8 +62,48 @@ curl -N localhost:8000/runs/RUN_ID/events
 | `s3_fanout` | Fan-out 1→N | One source, parallel facet analyses |
 | `s4_chain` | Linear Chain A→B→C | C derives from both A and B |
 | `s5_cross_registry` | Cross-Registry Chain | Edge crosses registry-a → registry-b |
+| `s6_restricted` | Restricted Visibility | Audience-gated reads (auth) |
 | `s7_supersession` | Supersession v1→v2 | Same lineage, two versions |
 | `s8_cross_org` | Cross-Org Isolation | Two orgs, no cross-references |
+| `s9_p256_publish` | ECDSA-P256 Publish | P-256 signer + verifier parity |
+| `s10_tenant_isolation` | Tenant Isolation | JWT-bound tenancy; cross-tenant denied |
+| `s11_revocation` | Token Revocation | Mint → use → revoke (RFC 7009) |
+| `s12_key_rotation` | Key Rotation + Reload | Overlapping pinned-key validity windows |
+| `s13_policy_deny` | Policy / Authz | Guarded CP endpoint denies/admits |
+| `s14_domain_pack` | Domain-Pack Gating | Context-type gating on ingest |
+| `s15_supersession_lineage` | Supersession + guard | `expected_lineage_id` concurrency guard |
+
+> **V2 scenarios (S9–S15)** exercise the features that landed across the
+> sibling repos — P-256 signing, multi-tenancy, token revocation,
+> key-rotation windows, policy, and domain packs. **S9** and **S15** run
+> in the default stack (anonymous publish). **S10–S14** need live token
+> issuance and/or the control plane; they **degrade gracefully** (marked
+> *complete-but-degraded* via a `degraded: true` summary flag) when that
+> infra is absent — see *Running the full stack*.
+
+## V2 protocol features
+
+- **Multi-algorithm signing.** Agents sign with Ed25519 or ECDSA-P256.
+  The token manager posts the matching `algorithm` to `/auth/token` and
+  the verifier picks the right path. `scripts/gen_keys.py --algorithm
+  ecdsa-p256` emits SEC1/JWK/`verificationMethod` material.
+- **Multi-tenancy.** The authoritative tenant rides in the JWT `tenant`
+  claim (issuer-stamped via the registry's `auth.tenant_agents`).
+  `X-Tenant-Id` is **only a fallback** for unbound producer-signed
+  publishes (RFC-ACDP-0008 §6.4); the client never lets the header
+  contradict the claim.
+- **Cursor pagination.** `AcdpClient.search_all(...)` walks the whole
+  paginated sequence and **continues through an empty-but-cursored page**
+  (RFC-ACDP-0005 §2.3). `invalid_cursor` / `cursor_expired` surface as
+  `CursorError`.
+- **Token revocation.** `TokenManager.revoke(...)` calls
+  `POST /auth/token/revoke` (RFC 7009) and drops the cached token.
+- **Pinned-key rotation.** Overlapping `valid_from`/`valid_until` windows
+  let an outgoing and incoming key both verify during a rollover;
+  `pinned_keys_diff.py` encodes algorithm + windows in the CP wire
+  format and the CP can hot-reload via `/admin/pinned-keys/reload`.
+- **Extended body fields.** Publishes carry `data_refs`, `data_period`,
+  and `expires_at`; supersession uses `expected_lineage_id`.
 
 ## LLM provider
 
@@ -80,10 +121,35 @@ RFC 7009 revocation, federated cross-issuer validation, multi-tenancy,
 policy engine, and an append-only audit ledger.
 
 When `CONTROL_PLANE_URL` is empty, the playground runs standalone. When
-set, every registry webhook is HMAC-signed and forwarded; run
-start/complete notifications are also posted there. Multi-tenant
-deployments set the `X-Tenant-Id` header on forwarded webhooks so
-the CP attributes events to the right tenant.
+set, every registry webhook is HMAC-signed and forwarded (preserving the
+`X-ACDP-Event-Id` dedup key); run start/complete notifications are also
+posted there. Multi-tenant deployments set the `X-Tenant-Id` header on
+forwarded webhooks so the CP attributes events to the right tenant. The
+forwarder honours a cooperative `Retry-After` on a transient upstream.
+
+The `ControlPlaneClient` also drives the CP operator surface when
+`CONTROL_PLANE_ADMIN_TOKEN` is set: `introspect` (RFC 7662),
+`revocations` (the cross-issuer feed), and `reload_pinned_keys`.
+
+### Running the full stack
+
+```bash
+make up-full   # playground + registry-a + registry-b + control-plane
+```
+
+`docker-compose.full.yml` adds the NestJS control plane (DB-less:
+`AUTH_PERSISTENCE=memory`) on `:3001`, points the playground at it, and
+wires the shared HMAC + admin secrets. The auth/revocation/policy
+scenarios (S10–S14) have a real IdP to talk to there.
+
+> **Live auth caveat.** The registry verifies challenge signatures by
+> resolving the agent's `did:web` document — the playground's
+> `*.playground.local` DIDs aren't web-hosted and keys rotate per run, so
+> token issuance can't fully complete against a stock registry. The
+> auth-dependent scenarios are built to **degrade gracefully** and are
+> validated by the unit suite (mocked registry/CP); the deterministic
+> cores (P-256 crypto, cursor logic, tenant-header policy, rotation
+> windows, Retry-After) are fully exercised offline.
 
 ### TokenManager refresh-reason telemetry
 
@@ -99,3 +165,18 @@ on success and WARNING on failure with a `failure_kind` discriminator.
 repo and the sibling `acdp-rs/` + `acdp-registry-rs/` repos. The
 playground image installs the Python SDK from the sibling path; the
 registry images are built from the sibling repo's Dockerfile.
+`docker-compose.full.yml` overlays the control plane (built from
+`../acdp-control-plane`).
+
+## Rebuilding the SDK
+
+The `acdp` Python package is a compiled (maturin/pyo3) extension. An
+editable pin does **not** recompile Rust, so after pulling `acdp-rs`
+changes (e.g. to pick up `AcdpP256Producer` /
+`verify_signature_p256`) rebuild it:
+
+```bash
+make build-sdk   # runs `maturin develop --release` against ../acdp-rs/bindings/acdp-py
+```
+
+`make dev` does this for you.

@@ -53,12 +53,33 @@ class PinnedEntry:
     agent_did: str
     public_key_b64: str
     algorithm: str = "ed25519"
+    valid_from: int | None = None
+    valid_until: int | None = None
 
     def to_env_token(self) -> str:
-        # CP env format: `did=pubkey` (algorithm not encoded yet — V1).
-        # Once #10 lands ECDSA-P256 acceptance in the CP, this CLI
-        # will need to support `did=pubkey:algorithm` or similar.
-        return f"{self.agent_did}={self.public_key_b64}"
+        """Render the CP ``CONTROL_PLANE_PINNED_KEYS`` wire token.
+
+        Format: ``did=pubkey[:algorithm[:validFrom..validUntil]]``.
+
+        A plain Ed25519 key with no validity window renders as the bare
+        ``did=pubkey`` (backward-compatible). A non-default algorithm or
+        a validity window appends the extra colon-delimited segments;
+        the algorithm is always emitted alongside a window so the value
+        is unambiguous (a window segment is the one containing ``..``).
+        """
+        token = f"{self.agent_did}={self.public_key_b64}"
+        has_window = self.valid_from is not None or self.valid_until is not None
+        if self.algorithm != "ed25519" or has_window:
+            token += f":{self.algorithm}"
+        if has_window:
+            lo = str(self.valid_from) if self.valid_from is not None else ""
+            hi = str(self.valid_until) if self.valid_until is not None else ""
+            token += f":{lo}..{hi}"
+        return token
+
+    def identity(self) -> tuple:
+        """Comparable tuple of everything that matters for a diff."""
+        return (self.public_key_b64, self.algorithm, self.valid_from, self.valid_until)
 
 
 def parse_registry_toml(path: Path) -> list[PinnedEntry]:
@@ -73,6 +94,8 @@ def parse_registry_toml(path: Path) -> list[PinnedEntry]:
                     agent_did=entry["agent_did"],
                     public_key_b64=entry["public_key_b64"],
                     algorithm=entry.get("algorithm", "ed25519"),
+                    valid_from=entry.get("valid_from"),
+                    valid_until=entry.get("valid_until"),
                 )
             )
         except KeyError as e:
@@ -109,7 +132,13 @@ def to_env_value(entries: list[PinnedEntry]) -> str:
 
 
 def parse_env_value(raw: str) -> list[PinnedEntry]:
-    """Parse the CONTROL_PLANE_PINNED_KEYS format back into entries."""
+    """Parse the CONTROL_PLANE_PINNED_KEYS format back into entries.
+
+    Tolerates the extended ``did=pub[:algorithm[:from..until]]`` form: a
+    colon segment containing ``..`` is the validity window, otherwise it
+    is the algorithm. Base64 keys never contain ``:`` so the split is
+    unambiguous.
+    """
     out: list[PinnedEntry] = []
     for token in raw.split(","):
         token = token.strip()
@@ -119,8 +148,28 @@ def parse_env_value(raw: str) -> list[PinnedEntry]:
             raise SystemExit(
                 f"malformed env token (expected did=pubkey): {token!r}"
             )
-        did, _, pub = token.partition("=")
-        out.append(PinnedEntry(agent_did=did.strip(), public_key_b64=pub.strip()))
+        did, _, value = token.partition("=")
+        segs = value.strip().split(":")
+        pub = segs[0]
+        algorithm = "ed25519"
+        valid_from: int | None = None
+        valid_until: int | None = None
+        for seg in segs[1:]:
+            if ".." in seg:
+                lo, _, hi = seg.partition("..")
+                valid_from = int(lo) if lo else None
+                valid_until = int(hi) if hi else None
+            elif seg:
+                algorithm = seg
+        out.append(
+            PinnedEntry(
+                agent_did=did.strip(),
+                public_key_b64=pub,
+                algorithm=algorithm,
+                valid_from=valid_from,
+                valid_until=valid_until,
+            )
+        )
     return out
 
 
@@ -136,7 +185,7 @@ def diff_entries(
     changed = [
         (cur_map[did], des_map[did])
         for did in cur_map.keys() & des_map.keys()
-        if cur_map[did].public_key_b64 != des_map[did].public_key_b64
+        if cur_map[did].identity() != des_map[did].identity()
     ]
     return only_desired, only_current, changed
 
@@ -147,17 +196,21 @@ def render(fmt: str, entries: list[PinnedEntry]) -> str:
     if fmt == "raw":
         return to_env_value(entries)
     if fmt == "json":
-        return json.dumps(
-            [
-                {
-                    "agent_did": e.agent_did,
-                    "public_key_b64": e.public_key_b64,
-                    "algorithm": e.algorithm,
-                }
-                for e in entries
-            ],
-            indent=2,
-        )
+        records = []
+        for e in entries:
+            rec = {
+                "agent_did": e.agent_did,
+                "public_key_b64": e.public_key_b64,
+                "algorithm": e.algorithm,
+            }
+            # Only surface window bounds when present, so the common case
+            # stays a clean 3-key record.
+            if e.valid_from is not None:
+                rec["valid_from"] = e.valid_from
+            if e.valid_until is not None:
+                rec["valid_until"] = e.valid_until
+            records.append(rec)
+        return json.dumps(records, indent=2)
     raise SystemExit(f"unknown --format: {fmt}")
 
 

@@ -48,12 +48,20 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from acdp_client.retry_after import parse_retry_after
 from acdp_client.signing import producer_algorithm
 
 if TYPE_CHECKING:
     from acdp_client.signing import Producer
 
 log = logging.getLogger(__name__)
+
+# Transient statuses worth one cooperative wait when the registry sends a
+# Retry-After. /auth/challenge is rate-limited per agent_id and answers a
+# burst with 429 + Retry-After (registry 2e7b4a5); 503 covers a briefly
+# unavailable auth backend.
+_RETRYABLE_MINT = {429, 503}
+_MAX_MINT_RETRY_DELAY = 30.0
 
 
 def _decode_unverified_claims(token: str) -> dict[str, object]:
@@ -260,6 +268,45 @@ class TokenManager:
                 self._locks[key] = lock
             return lock
 
+    async def _post_cooperative(
+        self,
+        url: str,
+        json_body: dict,
+        *,
+        reason: RefreshReason,
+        producer: "Producer",
+        registry_base_url: str,
+        kind: str,
+    ) -> httpx.Response:
+        """POST ``json_body`` with one cooperative retry on a rate limit.
+
+        A 429/503 carrying a parseable ``Retry-After`` (RFC 9110) earns a
+        single capped wait + retry — exactly the contract the registry's
+        per-agent challenge throttle expects. Any other status (including a
+        second 429) is returned to the caller to handle.
+        """
+        resp = await self._http.post(url, json=json_body)
+        if resp.status_code not in _RETRYABLE_MINT:
+            return resp
+        delay = parse_retry_after(resp.headers.get("retry-after"), now=time.time())
+        if delay is None:
+            return resp
+        wait = min(delay, _MAX_MINT_RETRY_DELAY)
+        log.info(
+            "acdp token mint rate-limited; honouring Retry-After",
+            extra={
+                "event": "acdp.token.mint.retry",
+                "refresh_reason": reason.value,
+                "agent_did": producer.agent_did,
+                "registry_base_url": registry_base_url,
+                "kind": kind,
+                "status": resp.status_code,
+                "retry_after_seconds": wait,
+            },
+        )
+        await asyncio.sleep(wait)
+        return await self._http.post(url, json=json_body)
+
     async def _mint(
         self,
         producer: "Producer",
@@ -290,7 +337,10 @@ class TokenManager:
         ch_url = f"{registry_base_url}/auth/challenge"
         ch_req = {"agent_id": producer.agent_did}
         try:
-            ch_resp = await self._http.post(ch_url, json=ch_req)
+            ch_resp = await self._post_cooperative(
+                ch_url, ch_req, reason=reason, producer=producer,
+                registry_base_url=registry_base_url, kind="challenge",
+            )
         except httpx.HTTPError as e:
             self._log_failure(reason, producer, registry_base_url, "challenge_transport", str(e))
             raise ChallengeError(f"POST {ch_url} failed: {e}") from e
@@ -329,7 +379,10 @@ class TokenManager:
             "signature": signature,
         }
         try:
-            tk_resp = await self._http.post(tk_url, json=tk_req)
+            tk_resp = await self._post_cooperative(
+                tk_url, tk_req, reason=reason, producer=producer,
+                registry_base_url=registry_base_url, kind="token",
+            )
         except httpx.HTTPError as e:
             self._log_failure(
                 reason, producer, registry_base_url, "token_transport", str(e),

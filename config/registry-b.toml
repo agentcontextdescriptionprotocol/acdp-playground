@@ -25,6 +25,7 @@ challenge_ttl_seconds  = 300
 token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
 require_tenant = false
+admin_tokens   = ["playground-registry-admin"]
 
 # Tenant bindings (see registry-a.toml for the rationale). Registry-b
 # carries the tenant-b agent for the cross-registry tenant scenario.
@@ -45,6 +46,7 @@ queue_capacity = 1024
 max_payload_bytes           = 1048576
 max_embedded_bytes          = 65536
 idempotency_key_ttl_seconds = 86400
+challenge_rate_per_minute   = 60
 
 [playground]
 enabled = true

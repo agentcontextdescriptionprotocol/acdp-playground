@@ -91,8 +91,59 @@ class SearchResponse(_Open):
         return self.matches
 
 
+# ── Error wire envelope (RFC-ACDP-0007 §4/§5) ─────────────────────────────
+
+
+def parse_error_envelope(
+    payload: Any,
+) -> tuple[str | None, str, dict[str, Any] | None]:
+    """Pull ``(code, message, details)`` out of an ACDP error response.
+
+    The normative shape (RFC-ACDP-0007 §4) is
+    ``{"error": {"code", "message", "details?"}}`` served as
+    ``application/acdp+json``. We tolerate a few legacy spellings
+    (top-level ``code``/``detail``) so the client keeps working against an
+    older registry. Returns ``(None, "", None)`` when nothing recognisable
+    is present.
+    """
+    if not isinstance(payload, dict):
+        return None, "", None
+    err = payload.get("error")
+    if isinstance(err, dict):
+        code = err.get("code")
+        message = err.get("message") or err.get("detail") or ""
+        details = err.get("details")
+        return (
+            code if isinstance(code, str) else None,
+            message if isinstance(message, str) else "",
+            details if isinstance(details, dict) else None,
+        )
+    # Legacy / flat fallback.
+    code = payload.get("code")
+    message = payload.get("message") or payload.get("detail") or ""
+    return (
+        code if isinstance(code, str) else None,
+        message if isinstance(message, str) else "",
+        None,
+    )
+
+
 # Cursor error codes per RFC-ACDP-0005 / RFC-ACDP-0007 §4.
 CURSOR_ERROR_CODES = frozenset({"invalid_cursor", "cursor_expired"})
+
+# ``superseded_target.details.reason`` subtypes (RFC-ACDP-0007 §5.x;
+# registry acdp-registry-rs 34aee21 + SDK 64a3d66). 400 for static
+# violations, 409 for races — the client surfaces the reason either way.
+SUPERSEDE_REASONS = frozenset(
+    {
+        "not_found",  # absent OR not owned by the requester (no existence oracle)
+        "version_mismatch",
+        "already_superseded",
+        "lineage_mismatch",
+        "lineage_walk_failed",
+        "cross_registry_supersession_unsupported",
+    }
+)
 
 
 class CursorError(RuntimeError):

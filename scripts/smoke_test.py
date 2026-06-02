@@ -39,6 +39,9 @@ async def main() -> int:
     failures += await _check_p256_round_trip()
     failures += await _check_jcs_number_stability()
     failures += await _check_extended_body_fields()
+    failures += await _check_jcs_numeric_vectors()
+    failures += await _check_ssrf_guard()
+    failures += await _check_supersession_error_parse()
 
     print()
     if failures:
@@ -52,7 +55,7 @@ async def main() -> int:
 
 
 async def _check_scenarios_load() -> int:
-    print("\n[1/8] scenario catalog loads")
+    print("\n[1/11] scenario catalog loads")
     try:
         from playground.scenarios import list_scenarios
     except Exception as e:  # noqa: BLE001
@@ -66,7 +69,8 @@ async def _check_scenarios_load() -> int:
         "s7_supersession", "s8_cross_org",
         "s9_p256_publish", "s10_tenant_isolation", "s11_revocation",
         "s12_key_rotation", "s13_policy_deny", "s14_domain_pack",
-        "s15_supersession_lineage",
+        "s15_supersession_lineage", "s16_dataref_ssrf",
+        "s17_supersession_authz",
     }
     got = {s.id for s in scenarios}
     missing = expected - got
@@ -80,7 +84,7 @@ async def _check_scenarios_load() -> int:
 
 
 async def _check_sdk_round_trip() -> int:
-    print("\n[2/8] acdp-py SDK round-trip")
+    print("\n[2/11] acdp-py SDK round-trip")
     try:
         from acdp import AcdpProducer, AcdpVerifier
     except Exception as e:  # noqa: BLE001
@@ -126,7 +130,7 @@ async def _check_sdk_round_trip() -> int:
 
 
 async def _check_agent_publish_path() -> int:
-    print("\n[3/8] BasePlaygroundAgent.publish against fake registry")
+    print("\n[3/11] BasePlaygroundAgent.publish against fake registry")
     try:
         from acdp import AcdpProducer
         from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -187,7 +191,7 @@ async def _check_agent_publish_path() -> int:
 
 
 async def _check_webhook_signature() -> int:
-    print("\n[4/8] webhook signature verify")
+    print("\n[4/11] webhook signature verify")
     secret = "test-secret"
     body = b'{"type":"context_published","agent_id":"did:web:x","ctx_id":"acdp://r/1"}'
     expected = f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
@@ -222,7 +226,7 @@ async def _check_control_plane_forwarding() -> int:
     ControlPlaneClient signs + forwards run lifecycle + webhook payloads
     correctly. Replaces the previous "control-plane stub deferred" gap
     (deferred-plan §13.3)."""
-    print("\n[5/8] control-plane forwarding (in-process stub)")
+    print("\n[5/11] control-plane forwarding (in-process stub)")
 
     try:
         import uvicorn
@@ -334,7 +338,7 @@ async def _check_control_plane_forwarding() -> int:
 
 
 async def _check_p256_round_trip() -> int:
-    print("\n[6/8] ECDSA-P256 producer + verifier round-trip")
+    print("\n[6/11] ECDSA-P256 producer + verifier round-trip")
     try:
         from acdp import AcdpP256Producer, AcdpVerifier
     except ImportError:
@@ -377,7 +381,7 @@ async def _check_p256_round_trip() -> int:
 async def _check_jcs_number_stability() -> int:
     """RFC 8785 number canonicalization must be stable: the same body with a
     float metadata value hashes identically across two independent builds."""
-    print("\n[7/8] JCS RFC 8785 numeric canonicalization stability")
+    print("\n[7/11] JCS RFC 8785 numeric canonicalization stability")
     from acdp import AcdpProducer, AcdpVerifier
 
     producer = AcdpProducer.from_seed(
@@ -415,7 +419,7 @@ async def _check_jcs_number_stability() -> int:
 async def _check_extended_body_fields() -> int:
     """The agent threads data_refs / data_period / expires_at into the
     publish request, and omits them when unset."""
-    print("\n[8/8] extended body fields (data_refs / data_period / expires_at)")
+    print("\n[8/11] extended body fields (data_refs / data_period / expires_at)")
     from acdp import AcdpProducer
     from acdp_client.models import PublishResponse
     from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -460,6 +464,103 @@ async def _check_extended_body_fields() -> int:
         print(f"  FAIL: expires_at not set: {req.get('expires_at')}")
         return 1
     print("  ok: data_refs + data_period + expires_at present on publish request")
+    return 0
+
+
+async def _check_jcs_numeric_vectors() -> int:
+    """The pure-Python JCS reference reproduces the RFC's can-011 vectors
+    (negative-zero -> '0', exponential bands, integer exactness)."""
+    print("\n[9/11] JCS RFC 8785 numeric conformance vectors")
+    import hashlib as _hashlib
+    from pathlib import Path
+
+    from acdp_client.jcs_numbers import canonicalize
+
+    rfc_dir = Path(os.environ.get("ACDP_RFC_DIR", os.path.join(ROOT, "..", "agentcontextdescriptionprotocol")))
+    vectors_path = rfc_dir / "schemas" / "conformance" / "can-011-jcs-numeric-vectors.json"
+    if not vectors_path.exists():
+        print(f"  SKIP: vectors not found at {vectors_path}")
+        return 0
+    vectors = json.loads(vectors_path.read_text())["vectors"]
+    for vec in vectors:
+        got = canonicalize(vec["input"])
+        want = vec["expected"]["canonical_form"]
+        if got != want:
+            print(f"  FAIL {vec['name']}: {got!r} != {want!r}")
+            return 1
+        digest = _hashlib.sha256(got.encode("utf-8")).hexdigest()
+        if digest != vec["expected"]["sha256_hex"]:
+            print(f"  FAIL {vec['name']}: hash mismatch")
+            return 1
+    print(f"  ok: all {len(vectors)} numeric vectors reproduced")
+    return 0
+
+
+async def _check_ssrf_guard() -> int:
+    """The consumer SSRF guard blocks IMDS, mixed-answer DNS, cross-port
+    redirects, and non-https — without touching the network."""
+    print("\n[10/11] consumer SSRF guard (data_refs)")
+    from acdp_client.safe_http import (
+        SsrfError,
+        SsrfPolicy,
+        check_url,
+        ip_is_forbidden,
+        same_authority,
+        screen_host,
+    )
+
+    pol = SsrfPolicy.production()
+    if ip_is_forbidden("169.254.169.254", pol) is None:
+        print("  FAIL: IMDS not blocked")
+        return 1
+    try:
+        screen_host("x", pol, resolver=lambda h: ["203.0.113.10", "10.0.0.1"])
+        print("  FAIL: mixed answer not rejected")
+        return 1
+    except SsrfError:
+        pass
+    if same_authority("https://a.example/x", "https://a.example:8443/x"):
+        print("  FAIL: cross-port treated as same authority")
+        return 1
+    try:
+        check_url("http://a.example/x", pol)
+        print("  FAIL: http:// not blocked")
+        return 1
+    except SsrfError:
+        pass
+    print("  ok: IMDS + mixed-answer + cross-port + http all blocked")
+    return 0
+
+
+async def _check_supersession_error_parse() -> int:
+    """A superseded_target envelope surfaces as SupersededError with reason
+    (lineage-takeover prevention contract)."""
+    print("\n[11/11] supersession error envelope -> SupersededError")
+    import httpx
+
+    from acdp_client.client import AcdpClient, SupersededError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            headers={"content-type": "application/acdp+json"},
+            json={"error": {"code": "superseded_target",
+                            "details": {"reason": "not_found"}}},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = AcdpClient("http://reg.test", http=http)
+    try:
+        await client.publish('{"x":1}')
+        print("  FAIL: publish did not raise")
+        return 1
+    except SupersededError as e:
+        if e.reason != "not_found":
+            print(f"  FAIL: unexpected reason {e.reason!r}")
+            return 1
+    finally:
+        await client.aclose()
+    print("  ok: superseded_target -> SupersededError(reason='not_found')")
     return 0
 
 

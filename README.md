@@ -19,7 +19,7 @@ playground/
   events.py                   # in-process SSE bus
   control_plane.py            # no-op when CONTROL_PLANE_URL unset
 scripts/
-  smoke_test.py               # 8-check offline wiring (incl. P-256, JCS, CP stub)
+  smoke_test.py               # 11-check offline wiring (P-256, JCS vectors, SSRF guard, CP stub)
   gen_keys.py                 # deterministic agent identity material (ed25519 / p256)
   pinned_keys_diff.py         # translate registry [playground]pinned_keys → CONTROL_PLANE_PINNED_KEYS env
 config/                       # registry-a.toml, registry-b.toml
@@ -72,6 +72,8 @@ curl -N localhost:8000/runs/RUN_ID/events
 | `s13_policy_deny` | Policy / Authz | Guarded CP endpoint denies/admits |
 | `s14_domain_pack` | Domain-Pack Gating | Context-type gating on ingest |
 | `s15_supersession_lineage` | Supersession + guard | `expected_lineage_id` concurrency guard |
+| `s16_dataref_ssrf` | Consumer SSRF guard | `data_refs[].location` fetch screened (offline) |
+| `s17_supersession_authz` | Supersession authz | Non-owner lineage takeover rejected |
 
 > **V2 scenarios (S9–S15)** exercise the features that landed across the
 > sibling repos — P-256 signing, multi-tenancy, token revocation,
@@ -80,6 +82,13 @@ curl -N localhost:8000/runs/RUN_ID/events
 > issuance and/or the control plane; they **degrade gracefully** (marked
 > *complete-but-degraded* via a `degraded: true` summary flag) when that
 > infra is absent — see *Running the full stack*.
+>
+> **Round-2 scenarios (S16–S17)** cover the latest security-remediation
+> wave. **S16** runs **fully offline** (injected DNS resolver) and proves
+> the consumer SSRF guard blocks IMDS / mixed-answer / cross-port-redirect
+> / non-https `data_refs` fetches. **S17** drives the live registry's
+> producer-ownership check on supersession and degrades gracefully without
+> it.
 
 ## V2 protocol features
 
@@ -104,6 +113,36 @@ curl -N localhost:8000/runs/RUN_ID/events
   format and the CP can hot-reload via `/admin/pinned-keys/reload`.
 - **Extended body fields.** Publishes carry `data_refs`, `data_period`,
   and `expires_at`; supersession uses `expected_lineage_id`.
+
+### Round-2 sibling sync (2026-06)
+
+Closes the security-remediation + wire-conformance gap that landed across
+the siblings just after the V2 sync.
+
+- **Consumer SSRF guard.** `acdp_client.safe_http` screens any
+  `data_refs[].location` fetch the way RFC-ACDP-0008 §4.9 requires:
+  https-only, **all** resolved IPs validated against private/loopback/
+  IMDS/ULA/NAT64/v4-mapped ranges with **mixed-answer rejection**,
+  **same-authority** (scheme+host+effective-port) redirects only, and
+  size/timeout caps. `AcdpClient.fetch_data_ref(...)` also verifies the
+  `content_hash`. This is enforced in pure Python because the playground's
+  `httpx` client never goes through the Rust SDK's `RegistryClient` (where
+  the equivalent guard lives). Validated against the RFC's `*-ssrf-*`
+  fixtures; demoed offline by **S16**.
+- **Error wire envelope.** `AcdpHTTPError` parses the RFC-ACDP-0007 §4
+  `application/acdp+json` envelope (`code`/`message`/`details`); a denied
+  or non-owner supersession surfaces as `SupersededError` with a `.reason`
+  (`not_found`, `cross_registry_supersession_unsupported`, …).
+- **JCS numeric reference.** `acdp_client.jcs_numbers` is a tested
+  pure-Python RFC 8785 §3.2.2.3 reference (negative-zero → `0`,
+  exponential bands, integer exactness) checked against the RFC's `can-011`
+  vectors — the wire form producers must hit.
+- **Cooperative token throttling.** `TokenManager` honours a `429 +
+  Retry-After` (RFC 9110) on `/auth/challenge` and `/auth/token` with one
+  capped retry — matching the registry's per-agent challenge throttle.
+- **Identifier hygiene.** `acdp_client.identifiers` validates that
+  `origin_registry` is a bare DNS hostname (no port/scheme/DID/uppercase),
+  per RFC-ACDP-0002 §3.1.
 
 ## LLM provider
 

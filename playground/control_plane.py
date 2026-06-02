@@ -239,6 +239,28 @@ class ControlPlaneClient:
             return None
         return r.json()
 
+    async def domain_packs(self) -> dict[str, Any] | None:
+        """List the control plane's active runtime domain packs.
+
+        ``GET /domain-packs`` (CP ``6d4255b``) returns the packs that gate
+        custom ``context_type`` values on ingest. Public — no admin token
+        required. Returns ``{"packs": [...]}`` or ``None`` when the bridge
+        is disabled or the CP is unreachable.
+        """
+        if not self.enabled:
+            return None
+        url = self._base + "/domain-packs"
+        try:
+            client = await self._client()
+            r = await client.get(url)
+        except httpx.HTTPError as e:
+            log.warning("control-plane domain-packs failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane domain-packs -> %s", r.status_code)
+            return None
+        return r.json()
+
     async def reload_pinned_keys(self) -> dict[str, Any] | None:
         """Trigger a hot reload of the CP pinned-key directory (admin)."""
         admin = self._admin_headers()

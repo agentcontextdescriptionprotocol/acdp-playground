@@ -37,6 +37,11 @@ token_leeway_seconds   = 30
 # the bound agents below rather than relying on require_tenant.
 require_tenant = false
 
+# Admin tokens gate POST /admin/pinned-keys/reload (hot key rotation) and
+# /admin/status — parity with the control plane's AUTH_ADMIN_API_KEYS. The
+# pinned_keys_diff CLI keeps the CP's CONTROL_PLANE_PINNED_KEYS in lock-step.
+admin_tokens = ["playground-registry-admin"]
+
 # ── Tenant bindings (issuer-authoritative) ───────────────────────────
 # The registry stamps the `tenant` claim on tokens it issues to these
 # agent DIDs (RFC-ACDP-0008 §6.4: the JWT claim is the authoritative
@@ -85,6 +90,9 @@ queue_capacity = 1024
 max_payload_bytes           = 1048576
 max_embedded_bytes          = 65536
 idempotency_key_ttl_seconds = 86400
+# Per-agent challenge throttle (registry 2e7b4a5). A burst past this earns a
+# 429 + Retry-After; the playground's TokenManager honours it cooperatively.
+challenge_rate_per_minute   = 60
 
 [playground]
 enabled = true

@@ -4,6 +4,55 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-02 — Playground sibling sync, round 2 (security remediation)
+
+Closes the gap opened by the P0/P1 remediation + wire-conformance wave
+that landed across the siblings hours after the V2 sync (`#12`): consumer
+SSRF enforcement (`acdp-rs` #29), producer-ownership on supersession
+(`acdp-registry-rs` `34aee21`), the RFC-ACDP-0007 error envelope
+(`acdp-registry-rs` `18f73de`), RFC-8785 numeric canonicalization
+(`acdp-rs` `b79a1eb`), and the round-3 RFC clarifications.
+
+### Client / SDK
+
+- **Consumer SSRF guard.** New `acdp_client.safe_http` screens
+  `data_refs[].location` fetches: https-only, all resolved IPs validated
+  against private/loopback/IMDS/ULA/NAT64/v4-mapped ranges with
+  mixed-answer rejection, same-authority (scheme+host+effective-port)
+  redirects, and size/timeout caps. `AcdpClient.fetch_data_ref(...)`
+  verifies `content_hash` (`DataRefHashMismatch`). The Rust SDK's guard
+  lives in its `RegistryClient`, which the playground's `httpx` client
+  does not use — so this is enforced in pure Python (RFC-ACDP-0008 §4.9).
+- **Error wire envelope.** `AcdpHTTPError` now parses the RFC-ACDP-0007 §4
+  `application/acdp+json` envelope into `.code` / `.reason` / `.details`;
+  a rejected supersession raises `SupersededError` carrying the
+  `details.reason` subtype. `Accept: application/acdp+json` is advertised.
+- **JCS numeric reference.** `acdp_client.jcs_numbers` is a tested
+  pure-Python ECMAScript Number::toString (RFC 8785 §3.2.2.3) + canonical
+  serializer, validated against the RFC's `can-011` vectors.
+- **Cooperative token throttling.** `TokenManager` honours `429 +
+  Retry-After` on the challenge/token mint path with one capped retry; the
+  RFC 9110 parser moved to `acdp_client.retry_after` (re-exported from
+  `playground.retry_after`).
+- **Identifier hygiene.** `acdp_client.identifiers` validates
+  `origin_registry` as a bare DNS hostname (RFC-ACDP-0002 §3.1).
+
+### Scenarios + tooling
+
+- New scenarios **S16** (offline consumer-SSRF-guard demo) and **S17**
+  (supersession authorization / lineage-takeover prevention; degrades
+  gracefully without the registry).
+- `smoke_test.py` grows to 11 checks (adds JCS numeric vectors, SSRF
+  guard, supersession-error parsing).
+- 30+ new unit tests across SSRF, error envelope, JCS vectors,
+  identifiers, challenge Retry-After, and the round-2 scenarios.
+
+### Config / control plane
+
+- Registry configs gain `limits.challenge_rate_per_minute` and an
+  `auth.admin_tokens` entry (pinned-key reload parity with the CP).
+- The CP bridge gains `domain_packs()` (`GET /domain-packs`).
+
 ## 2026-06-01 — Playground V2 sibling sync
 
 The playground now exercises the features that landed across the RFC,

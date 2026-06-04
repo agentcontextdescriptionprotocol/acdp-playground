@@ -28,9 +28,11 @@ from acdp_client.models import (
     PublishResponse,
     SearchHit,
     SearchResponse,
+    parse_error_envelope,
 )
 
 if TYPE_CHECKING:
+    from acdp_client.safe_http import SsrfPolicy
     from acdp_client.signing import Producer
     from acdp_client.token_manager import TokenManager
 
@@ -38,19 +40,67 @@ TenantHeaderMode = Literal["fallback", "always", "never"]
 
 
 class AcdpHTTPError(RuntimeError):
-    """Raised when a registry returns a non-2xx response."""
+    """Raised when a registry returns a non-2xx response.
 
-    def __init__(self, status: int, body: str, url: str):
-        super().__init__(f"{status} from {url}: {body[:400]}")
+    Parses the RFC-ACDP-0007 §4 error envelope
+    (``{"error":{"code","message","details"}}``, served as
+    ``application/acdp+json``) when present, exposing ``.code`` /
+    ``.reason`` / ``.details`` so callers can branch on the machine
+    code rather than scraping the message string.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        body: str,
+        url: str,
+        *,
+        code: str | None = None,
+        message: str | None = None,
+        details: dict | None = None,
+    ):
+        super().__init__(f"{status} from {url}: {(message or body)[:400]}")
         self.status = status
         self.body = body
         self.url = url
+        self.code = code
+        self.details = details or {}
+
+    @property
+    def reason(self) -> str | None:
+        """The ``details.reason`` subtype, when the envelope carried one."""
+        reason = self.details.get("reason")
+        return reason if isinstance(reason, str) else None
+
+
+class SupersededError(AcdpHTTPError):
+    """A ``supersedes`` request was rejected (RFC-ACDP-0007 ``superseded_target``).
+
+    ``reason`` distinguishes the subtype: ``not_found`` (absent *or* not
+    owned by the requester — no existence oracle, registry 34aee21),
+    ``cross_registry_supersession_unsupported``, ``lineage_mismatch``,
+    ``already_superseded``, etc.
+    """
+
+
+def _build_http_error(r: httpx.Response) -> AcdpHTTPError:
+    code: str | None = None
+    message: str | None = None
+    details: dict | None = None
+    try:
+        code, message, details = parse_error_envelope(r.json())
+    except ValueError:
+        pass
+    kwargs = dict(code=code, message=message, details=details)
+    if code == "superseded_target":
+        return SupersededError(r.status_code, r.text, str(r.request.url), **kwargs)
+    return AcdpHTTPError(r.status_code, r.text, str(r.request.url), **kwargs)
 
 
 def _raise_for_status(r: httpx.Response) -> None:
     if r.is_success:
         return
-    raise AcdpHTTPError(r.status_code, r.text, str(r.request.url))
+    raise _build_http_error(r)
 
 
 class AcdpClient:
@@ -125,7 +175,12 @@ class AcdpClient:
         return None
 
     async def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        h = {"Content-Type": "application/json", "Accept": "application/json"}
+        # Advertise the ACDP media type so a conforming registry serves the
+        # RFC-ACDP-0007 §4 envelope (Content-Type: application/acdp+json).
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/acdp+json, application/json",
+        }
         token = await self._bearer_token()
         if token:
             h["Authorization"] = f"Bearer {token}"
@@ -299,12 +354,11 @@ class AcdpClient:
         if r.status_code != 400:
             return
         try:
-            err = r.json().get("error") or {}
+            code, message, _ = parse_error_envelope(r.json())
         except ValueError:
             return
-        code = err.get("code")
         if code in CURSOR_ERROR_CODES:
-            raise CursorError(code, err.get("message", "") or err.get("detail", ""))
+            raise CursorError(code, message)
 
     async def search_all(
         self,
@@ -400,3 +454,27 @@ class AcdpClient:
             return r.is_success
         except httpx.HTTPError:
             return False
+
+    # ── Data-ref fetch (consumer SSRF guard) ──────────────────────────────
+
+    async def fetch_data_ref(
+        self,
+        data_ref: dict,
+        *,
+        policy: "SsrfPolicy | None" = None,
+    ) -> bytes:
+        """Follow a ``data_refs[].location`` under the consumer SSRF guard.
+
+        Delegates to :mod:`acdp_client.safe_http`: the target host is
+        resolved and screened against private/loopback/IMDS ranges
+        (mixed-answer rejection), redirects must stay same-authority, and
+        the response size is capped. When the entry carries a
+        ``content_hash`` the bytes are verified (RFC-ACDP-0008 §4.9).
+
+        This guard is necessary because the playground's ``httpx`` client
+        does not go through the Rust SDK's ``RegistryClient`` (where the
+        equivalent enforcement lives).
+        """
+        from acdp_client.safe_http import fetch_data_ref as _fetch
+
+        return await _fetch(data_ref, policy=policy)

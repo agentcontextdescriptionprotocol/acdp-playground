@@ -1,6 +1,10 @@
 [registry]
 authority = "registry-a.playground.local"
 port      = 8100
+# The registry defaults to a loopback bind and refuses a non-loopback bind
+# when both TLS and auth are disabled (registry #24, anti-exposure). Binding
+# 0.0.0.0 here is the explicit opt-in and is safe because [auth] is enabled
+# below — required so the container is reachable across the compose network.
 bind      = "0.0.0.0"
 profiles  = ["acdp-registry-core", "acdp-registry-discovery"]
 cross_registry_resolution = true

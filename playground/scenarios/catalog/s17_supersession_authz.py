@@ -9,6 +9,16 @@ not-found shape a genuinely absent target returns, so the registry leaks
 no existence oracle. Cross-registry supersession is likewise refused
 (``cross_registry_supersession_unsupported``).
 
+Round 3 (registry ``c988ea4`` / ``#24``) adds a second dimension to the
+same rule: a successor must live in the **predecessor's tenant**. A
+cross-tenant supersession is rejected with the *identical*
+``superseded_target`` / ``not_found`` shape — by design indistinguishable
+from the non-owner and absent cases at the wire, so a caller cannot probe
+tenant membership either. Because the live wire result is identical to the
+ownership probe below, this scenario documents the tenant dimension in its
+summary and the hard assertion lives in ``tests/test_scenarios_round3.py``
+against a controlled 400.
+
 This scenario drives the live registry when it's up: agent A publishes
 v1, then agent B (a different DID) attempts to supersede it and we assert
 the rejection surfaces as :class:`acdp_client.SupersededError` with the
@@ -120,11 +130,20 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
                 "owner_ctx": v1.ctx_id,
                 "attacker_blocked": attacker_blocked,
                 "rejection_reason": reason,
+                # The tenant-continuity rule (#24) collapses to the same wire
+                # result as the ownership check, so it cannot be probed live;
+                # documented here and asserted in test_scenarios_round3.py.
+                "tenant_continuity": "cross-tenant supersession → superseded_target/not_found",
             }
         )
         await note(
             "takeover attempt",
             f"blocked={attacker_blocked} reason={reason}",
+        )
+        await note(
+            "tenant continuity",
+            "a cross-tenant successor is rejected with the same not_found "
+            "shape (no tenant-membership oracle, registry #24)",
         )
 
         ok = attacker_blocked

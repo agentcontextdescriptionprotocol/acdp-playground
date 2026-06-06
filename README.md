@@ -73,7 +73,9 @@ curl -N localhost:8000/runs/RUN_ID/events
 | `s14_domain_pack` | Domain-Pack Gating | Context-type gating on ingest |
 | `s15_supersession_lineage` | Supersession + guard | `expected_lineage_id` concurrency guard |
 | `s16_dataref_ssrf` | Consumer SSRF guard | `data_refs[].location` fetch screened (offline) |
-| `s17_supersession_authz` | Supersession authz | Non-owner lineage takeover rejected |
+| `s17_supersession_authz` | Supersession authz | Non-owner / cross-tenant lineage takeover rejected |
+| `s18_idempotency` | Idempotent publish | Repeated `Idempotency-Key` replays one context |
+| `s19_cp_did_web_p256` | CP did:web P-256 | P-256 verification method the CP now resolves (offline) |
 
 > **V2 scenarios (S9–S15)** exercise the features that landed across the
 > sibling repos — P-256 signing, multi-tenancy, token revocation,
@@ -89,6 +91,12 @@ curl -N localhost:8000/runs/RUN_ID/events
 > / non-https `data_refs` fetches. **S17** drives the live registry's
 > producer-ownership check on supersession and degrades gracefully without
 > it.
+>
+> **Round-3 scenarios (S18–S19)** cover the post-remediation wire
+> conformance. **S18** proves a repeated `Idempotency-Key` replays a single
+> context (degrades gracefully). **S19** runs **fully offline** and proves
+> the playground's P-256 agent emits exactly the JWK-only `JsonWebKey2020`
+> verification method the control plane's did:web resolver now accepts.
 
 ## V2 protocol features
 
@@ -143,6 +151,41 @@ the siblings just after the V2 sync.
 - **Identifier hygiene.** `acdp_client.identifiers` validates that
   `origin_registry` is a bare DNS hostname (no port/scheme/DID/uppercase),
   per RFC-ACDP-0002 §3.1.
+
+### Round-3 sibling sync (2026-06)
+
+Tracks the P0/P1 remediation + RFC-ACDP-0007 §5 wire-conformance wave that
+landed in the registry (`#24`/`#25`/`#26`) and control plane (`#48`/`#49`)
+just after round 2.
+
+- **§5 error-code model.** `acdp_client.models.ERROR_CODES` enumerates the
+  machine codes the registry now emits (`invalid_signature`,
+  `unsupported_algorithm`, `key_resolution_failed`/`_unreachable`,
+  `not_implemented`, …); `SIGNATURE_ERROR_CODES` groups the "re-sign / fix
+  my key" subset. `data_ref_hash_mismatch` is kept **distinct** from
+  `hash_mismatch` (body hash vs data-ref hash).
+- **Typed wire errors.** `not_authorized` moved to **403** (`#24`) and
+  surfaces as `NotAuthorizedError`; an oversized body returns **413** with
+  `application/acdp+json` even from the outer middleware (`#26`) and
+  surfaces as `PayloadTooLargeError`. Both subclass `AcdpHTTPError`. The
+  client retries only on **401** (stale token) — a 403 is terminal.
+- **Idempotent publish.** The client forwards `Idempotency-Key` verbatim
+  (1–256 chars; an out-of-range value is treated as absent server-side, not
+  pre-rejected); a repeat replays one context — demoed by **S18**.
+- **Audience telemetry.** `CachedToken.aud` peeks the JWT `aud` claim (now
+  bound to the issuing authority on both registry and CP) and logs it on
+  mint, so an audience-mismatch `TokenAuthError` is diagnosable. Verification
+  still belongs to the issuer — the playground only peeks.
+- **CP error-envelope logging.** The control-plane bridge parses the CP's
+  ACDP error envelope (`#49`) and logs `error.code`/`reason` instead of a
+  bare status.
+- **did:web P-256 parity.** The CP now resolves P-256 did:web verification
+  methods (`#49`); **S19** proves the playground emits exactly the JWK-only
+  `JsonWebKey2020` form it accepts (offline).
+- **Config knobs.** `docker-compose.full.yml` + `.env.example` document the
+  new CP env (`JWT_AUDIENCE`, `AUTH_REQUIRE_TENANT`, `INGEST_*`,
+  `WEBHOOK_SSRF_*`) with secure-but-demo-friendly defaults; the registry
+  configs note the new loopback-bind constraint.
 
 ## LLM provider
 

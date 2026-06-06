@@ -76,10 +76,34 @@ class AcdpHTTPError(RuntimeError):
 class SupersededError(AcdpHTTPError):
     """A ``supersedes`` request was rejected (RFC-ACDP-0007 ``superseded_target``).
 
-    ``reason`` distinguishes the subtype: ``not_found`` (absent *or* not
-    owned by the requester — no existence oracle, registry 34aee21),
+    ``reason`` distinguishes the subtype: ``not_found`` (absent, not owned by
+    the requester, *or* a cross-tenant successor — all collapse to one
+    no-existence-oracle shape, registry #24),
     ``cross_registry_supersession_unsupported``, ``lineage_mismatch``,
     ``already_superseded``, etc.
+    """
+
+
+class NotAuthorizedError(AcdpHTTPError):
+    """Authenticated but not permitted (RFC-ACDP-0007 ``not_authorized``).
+
+    The registry returns **403** for this as of acdp-registry-rs #24 (it was
+    formerly 401). This is distinct from a bare 401 — which means the *token
+    itself* was rejected (expired / revoked / unknown) and triggers one
+    transparent re-mint-and-retry in :meth:`AcdpClient._retrying`. A 403 is
+    terminal: re-minting the same identity will not change the outcome, so the
+    client surfaces it immediately.
+    """
+
+
+class PayloadTooLargeError(AcdpHTTPError):
+    """The request body exceeded the registry's size limit (HTTP 413).
+
+    Emitted by the registry's outermost ``RequestBodyLimitLayer`` (registry
+    #26). Because the rejection is produced by middleware *before* the handler
+    runs, the body may be empty or carry only a short envelope — but it now
+    carries ``application/acdp+json`` regardless. Maps to the registry's
+    ``[limits] max_payload_bytes`` setting.
     """
 
 
@@ -90,10 +114,18 @@ def _build_http_error(r: httpx.Response) -> AcdpHTTPError:
     try:
         code, message, details = parse_error_envelope(r.json())
     except ValueError:
+        # Framework-generated rejections (413/408, registry #26) may carry an
+        # empty or non-JSON body while still advertising application/acdp+json.
         pass
     kwargs = dict(code=code, message=message, details=details)
+    # 413 is a status-level signal that may arrive with no parseable envelope,
+    # so branch on status before code.
+    if r.status_code == 413:
+        return PayloadTooLargeError(r.status_code, r.text, str(r.request.url), **kwargs)
     if code == "superseded_target":
         return SupersededError(r.status_code, r.text, str(r.request.url), **kwargs)
+    if code == "not_authorized":
+        return NotAuthorizedError(r.status_code, r.text, str(r.request.url), **kwargs)
     return AcdpHTTPError(r.status_code, r.text, str(r.request.url), **kwargs)
 
 
@@ -218,6 +250,13 @@ class AcdpClient:
 
         Idempotent for GET/PUT/DELETE and acceptable for POST since a 401
         means the prior call never reached the business-logic layer.
+
+        Only **401** triggers the re-mint-and-retry: it means the token was
+        rejected (expired / revoked / unknown), which a fresh token may fix.
+        A **403** (``not_authorized``, registry #24 moved authz failures off
+        401) is deliberately *not* retried — the identity is authenticated but
+        forbidden, so re-minting the same token changes nothing; it falls
+        through to ``_raise_for_status`` as :class:`NotAuthorizedError`.
         """
         headers = await self._headers(extra_headers)
         r = await send(headers)

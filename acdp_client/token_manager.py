@@ -85,6 +85,22 @@ def _decode_unverified_claims(token: str) -> dict[str, object]:
     return claims if isinstance(claims, dict) else {}
 
 
+def _normalize_aud(aud_claim: object) -> str | None:
+    """Render a JWT ``aud`` claim as a string for telemetry.
+
+    ``aud`` is either a single string or (RFC 7519) an array of strings. We
+    flatten an array to a comma-joined string so it logs cleanly; anything
+    else (absent / malformed) becomes ``None``. Telemetry only — never used
+    for verification.
+    """
+    if isinstance(aud_claim, str):
+        return aud_claim or None
+    if isinstance(aud_claim, list):
+        joined = ",".join(str(a) for a in aud_claim if a)
+        return joined or None
+    return None
+
+
 # ── refresh telemetry ────────────────────────────────────────────────────
 
 
@@ -139,9 +155,16 @@ class TokenAuthError(TokenError):
 class CachedToken:
     """A token paired with its registry-declared unix-seconds expiry.
 
-    ``tenant`` and ``jti`` are read from the (unverified) JWT payload for
-    observability and to drive revocation; they are never treated as
+    ``tenant``, ``jti`` and ``aud`` are read from the (unverified) JWT payload
+    for observability and to drive revocation; they are never treated as
     authoritative by the playground — the issuing registry/CP own that.
+
+    ``aud`` (the JWT ``aud`` claim) is peeked purely for telemetry: both the
+    registry (acdp-registry-rs #24) and the control plane (#48) now bind ``aud``
+    to their own authority and reject a token minted for a different one. A
+    mismatch surfaces server-side as a 401, which the manager reports as
+    :class:`TokenAuthError` after its one reactive re-mint — logging ``aud``
+    on mint makes that failure mode diagnosable.
     """
 
     token: str
@@ -149,6 +172,7 @@ class CachedToken:
     expires_at: int  # unix seconds
     tenant: str | None = None
     jti: str | None = None
+    aud: str | None = None
 
     def is_fresh(self, leeway_seconds: int) -> bool:
         return time.time() + leeway_seconds < self.expires_at
@@ -407,6 +431,7 @@ class TokenManager:
                 expires_at=int(tk["expires_at"]),
                 tenant=tenant if isinstance(tenant, str) else None,
                 jti=claims.get("jti") if isinstance(claims.get("jti"), str) else None,
+                aud=_normalize_aud(claims.get("aud")),
             )
         except (KeyError, ValueError) as e:
             self._log_failure(
@@ -425,6 +450,7 @@ class TokenManager:
                 "agent_did": producer.agent_did,
                 "registry_base_url": registry_base_url,
                 "tenant": cached.tenant,
+                "aud": cached.aud,
                 "expires_at": cached.expires_at,
                 "ttl_seconds": ttl_seconds,
                 "elapsed_ms": elapsed_ms,

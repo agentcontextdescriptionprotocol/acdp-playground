@@ -45,6 +45,29 @@ services:
       # Optional: agent→tenant bindings and pinned keys (comma-separated).
       TENANT_AGENTS: ${CONTROL_PLANE_TENANT_AGENTS:-}
       CONTROL_PLANE_PINNED_KEYS: ${CONTROL_PLANE_PINNED_KEYS:-}
+      # ── Round-3 sibling sync (CP #48/#49) ─────────────────────────────
+      # Bind the issued JWT `aud` to this CP's authority and enforce it on
+      # verification — a token minted here is rejected by a peer registry
+      # bound to a different audience (and vice versa). Defaults to the
+      # issuing authority; pinned explicitly for clarity.
+      JWT_AUDIENCE: ${CONTROL_PLANE_JWT_AUDIENCE:-control-plane.playground.local}
+      # Strict tenancy: default-deny any request that resolves only to the
+      # silent `default` tenant. OFF here so the demo's untenanted scenarios
+      # keep working (mirror of the registry's auth.require_tenant=false).
+      AUTH_REQUIRE_TENANT: ${CONTROL_PLANE_AUTH_REQUIRE_TENANT:-false}
+      # Ingest DoS guards on the @Public() /ingest/acdp route (pre-parse).
+      # 1 MiB body / depth 32 matches the registry's [limits] defaults; the
+      # playground's forwarded webhooks are far smaller.
+      INGEST_MAX_BODY_BYTES: ${CONTROL_PLANE_INGEST_MAX_BODY_BYTES:-1048576}
+      INGEST_MAX_JSON_DEPTH: ${CONTROL_PLANE_INGEST_MAX_JSON_DEPTH:-32}
+      # OFF: the playground forwards events for the silent `default` tenant
+      # (or stamps X-Tenant-Id from an enrolled agent). Flip on to require a
+      # server-side enrollment before a non-default tenant is honoured.
+      INGEST_STRICT_TENANT: ${CONTROL_PLANE_INGEST_STRICT_TENANT:-false}
+      # Outbound-webhook SSRF policy (secure by default). The local stack
+      # only delivers to in-cluster service names, so these stay off.
+      WEBHOOK_SSRF_ALLOW_HTTP: ${CONTROL_PLANE_WEBHOOK_SSRF_ALLOW_HTTP:-false}
+      WEBHOOK_SSRF_ALLOW_LOOPBACK: ${CONTROL_PLANE_WEBHOOK_SSRF_ALLOW_LOOPBACK:-false}
     healthcheck:
       # node:alpine ships busybox wget, not curl.
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/healthz"]

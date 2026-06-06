@@ -6,9 +6,17 @@ owns all crypto. This package adds the async HTTP transport
 registry returns.
 """
 
-from acdp_client.client import AcdpClient, AcdpHTTPError, SupersededError
+from acdp_client.client import (
+    AcdpClient,
+    AcdpHTTPError,
+    NotAuthorizedError,
+    PayloadTooLargeError,
+    SupersededError,
+)
 from acdp_client.identifiers import is_valid_authority, validate_origin_registry
 from acdp_client.models import (
+    ERROR_CODES,
+    SIGNATURE_ERROR_CODES,
     Body,
     CursorError,
     FullContext,
@@ -48,6 +56,8 @@ from acdp_client.token_manager import (
 __all__ = [
     "ALG_ED25519",
     "ALG_P256",
+    "ERROR_CODES",
+    "SIGNATURE_ERROR_CODES",
     "AcdpClient",
     "AcdpHTTPError",
     "Body",
@@ -56,6 +66,8 @@ __all__ = [
     "CursorError",
     "DataRefHashMismatch",
     "FullContext",
+    "NotAuthorizedError",
+    "PayloadTooLargeError",
     "PublishResponse",
     "RefreshReason",
     "SearchHit",

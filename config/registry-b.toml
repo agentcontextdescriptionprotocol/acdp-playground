@@ -1,6 +1,9 @@
 [registry]
 authority = "registry-b.playground.local"
 port      = 8200
+# Loopback-bind default / non-loopback refusal when TLS+auth are both off
+# (registry #24). 0.0.0.0 is the explicit opt-in, safe because [auth] is
+# enabled below and required for cross-container reachability. See registry-a.
 bind      = "0.0.0.0"
 profiles  = ["acdp-registry-core", "acdp-registry-discovery"]
 cross_registry_resolution = true

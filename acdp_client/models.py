@@ -131,6 +131,47 @@ def parse_error_envelope(
 # Cursor error codes per RFC-ACDP-0005 / RFC-ACDP-0007 §4.
 CURSOR_ERROR_CODES = frozenset({"invalid_cursor", "cursor_expired"})
 
+# Machine-readable error codes the registry emits in the RFC-ACDP-0007 §5
+# envelope (registry acdp-registry-rs #24). Modelled so callers can branch on
+# the wire code rather than scraping the message string. Forward-compatible:
+# `parse_error_envelope` still returns any code it sees — this set documents
+# the ones with defined semantics, it is not an allow-list.
+#
+# Note the deliberate distinction (registry #24):
+#   * ``hash_mismatch``          — the signed *body* content_hash didn't verify.
+#   * ``data_ref_hash_mismatch`` — a fetched ``data_refs[].location`` payload
+#                                  didn't match its declared ``content_hash``
+#                                  (also raised consumer-side as
+#                                  :class:`acdp_client.safe_http.DataRefHashMismatch`).
+ERROR_CODES = frozenset(
+    {
+        "invalid_signature",
+        "unsupported_algorithm",
+        "key_resolution_failed",
+        "key_resolution_unreachable",
+        "not_implemented",
+        "not_authorized",
+        "hash_mismatch",
+        "data_ref_hash_mismatch",
+        "superseded_target",
+        "invalid_cursor",
+        "cursor_expired",
+    }
+)
+
+# The subset that means "the registry rejected my signature or could not
+# resolve/verify my key" — i.e. a producer-side credential/algorithm problem
+# rather than a request-shape or authorization problem. Useful for callers
+# that want to distinguish "re-sign / fix my key" from "I'm not allowed".
+SIGNATURE_ERROR_CODES = frozenset(
+    {
+        "invalid_signature",
+        "unsupported_algorithm",
+        "key_resolution_failed",
+        "key_resolution_unreachable",
+    }
+)
+
 # ``superseded_target.details.reason`` subtypes (RFC-ACDP-0007 §5.x;
 # registry acdp-registry-rs 34aee21 + SDK 64a3d66). 400 for static
 # violations, 409 for races — the client surfaces the reason either way.

@@ -4,6 +4,54 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-03 — Playground sibling sync, round 3 (wire conformance)
+
+Tracks the P0/P1 remediation + RFC-ACDP-0007 §5 wire-conformance wave that
+landed in the registry (`acdp-registry-rs` #24/#25/#26) and control plane
+(`acdp-control-plane` #48/#49) within a day of the round-2 sync. The
+companion `acdp-rs` changes (`8d46074` P-256 multicodec fix, `aafa92e`
+publish-tenant threading / SSRF-safe client / DID hardening) are core +
+registry-side and leave the Python binding surface unchanged, so no SDK
+rebuild is required.
+
+### Client / SDK
+
+- **§5 error-code model.** `acdp_client.models.ERROR_CODES` enumerates the
+  machine codes the registry now emits (`invalid_signature`,
+  `unsupported_algorithm`, `key_resolution_failed` / `key_resolution_unreachable`,
+  `not_implemented`, …); `SIGNATURE_ERROR_CODES` groups the credential/
+  algorithm subset. `data_ref_hash_mismatch` is kept distinct from
+  `hash_mismatch`.
+- **Typed wire errors.** `NotAuthorizedError` (the `not_authorized` code,
+  now **403** per registry #24) and `PayloadTooLargeError` (**413** from the
+  outer body-limit layer, now carrying `application/acdp+json` per #26) join
+  `SupersededError` under `AcdpHTTPError`. The 401-only re-mint-and-retry is
+  documented as deliberate — a 403 is terminal.
+- **Audience telemetry.** `CachedToken.aud` peeks the JWT `aud` claim (now
+  bound to the issuing authority on both siblings) and logs it on mint;
+  verification stays with the issuer.
+
+### Scenarios + tooling
+
+- New scenarios **S18** (idempotent-publish replay; degrades gracefully) and
+  **S19** (offline did:web P-256 conformance — the JWK-only `JsonWebKey2020`
+  the CP #49 resolver accepts).
+- **S17** documents the tenant-continuity dimension (cross-tenant
+  supersession collapses to the same `not_found` shape — no oracle).
+- `smoke_test.py` grows to 13 checks (idempotent replay, typed 403/413).
+- New tests: `test_idempotency.py`, `test_scenarios_round3.py`, plus
+  framework-413 cases in `test_error_envelope.py`.
+
+### Config / control plane
+
+- The control-plane bridge parses the CP's ACDP error envelope (#49) and
+  logs `error.code`/`reason`.
+- `docker-compose.full.yml` + `.env.example` document the new CP env knobs
+  (`JWT_AUDIENCE`, `AUTH_REQUIRE_TENANT`, `INGEST_MAX_BODY_BYTES`,
+  `INGEST_MAX_JSON_DEPTH`, `INGEST_STRICT_TENANT`, `WEBHOOK_SSRF_*`) with
+  secure-but-demo defaults; registry configs note the new loopback-bind
+  constraint (#24).
+
 ## 2026-06-02 — Playground sibling sync, round 2 (security remediation)
 
 Closes the gap opened by the P0/P1 remediation + wire-conformance wave

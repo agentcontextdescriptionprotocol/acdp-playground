@@ -5,7 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from acdp_client.client import AcdpClient, AcdpHTTPError, SupersededError
+from acdp_client.client import (
+    AcdpClient,
+    AcdpHTTPError,
+    PayloadTooLargeError,
+    SupersededError,
+)
 from acdp_client.models import CursorError, parse_error_envelope
 
 
@@ -79,6 +84,39 @@ async def test_generic_error_exposes_code():
     assert not isinstance(e.value, SupersededError)
     assert e.value.code == "not_authorized"
     assert e.value.status == 403
+    await client.aclose()
+
+
+async def test_framework_413_empty_body_raises_payload_too_large():
+    """A 413 from the registry's outer body-limit layer (registry #26) carries
+    application/acdp+json but may have an empty/non-JSON body — still typed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            413, headers={"content-type": "application/acdp+json"}, content=b""
+        )
+
+    client = _client(handler)
+    with pytest.raises(PayloadTooLargeError) as e:
+        await client.publish('{"x":1}')
+    assert e.value.status == 413
+    assert isinstance(e.value, AcdpHTTPError)  # generic handlers still catch it
+    await client.aclose()
+
+
+async def test_framework_413_with_envelope_exposes_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            413,
+            headers={"content-type": "application/acdp+json"},
+            json={"error": {"code": "payload_too_large", "message": "too big"}},
+        )
+
+    client = _client(handler)
+    with pytest.raises(PayloadTooLargeError) as e:
+        await client.publish('{"x":1}')
+    assert e.value.code == "payload_too_large"
+    assert e.value.status == 413
     await client.aclose()
 
 

@@ -32,6 +32,7 @@ from typing import Any
 
 import httpx
 
+from acdp_client.models import parse_error_envelope
 from playground.config import Settings
 from playground.retry_after import parse_retry_after
 
@@ -45,6 +46,30 @@ _MAX_RETRY_DELAY = 30.0  # cap a cooperative Retry-After wait
 def _sign(secret: str, body: bytes) -> str:
     mac = hmac.new(secret.encode("utf-8"), body, hashlib.sha256)
     return f"sha256={mac.hexdigest()}"
+
+
+def _describe_cp_error(r: httpx.Response) -> str:
+    """Summarise a non-2xx control-plane response for an operator log.
+
+    The CP now emits the RFC-ACDP-0007 ACDP error envelope
+    (``{"error":{"code","message","details"}}`` as ``application/acdp+json``,
+    CP #49) on its error and revocation-feed responses. We parse it so the log
+    carries the machine ``code``/``reason`` rather than just the status. This
+    is observability only — the bridge keeps its fire-and-forget / return-None
+    contract regardless.
+    """
+    parts = [f"status={r.status_code}"]
+    try:
+        code, message, details = parse_error_envelope(r.json())
+    except ValueError:
+        return parts[0]
+    if code:
+        parts.append(f"code={code}")
+    if isinstance(details, dict) and isinstance(details.get("reason"), str):
+        parts.append(f"reason={details['reason']}")
+    if message:
+        parts.append(f"message={message[:120]}")
+    return " ".join(parts)
 
 
 class ControlPlaneClient:
@@ -105,9 +130,7 @@ class ControlPlaneClient:
                     await asyncio.sleep(min(delay, _MAX_RETRY_DELAY))
                     r = await client.post(url, content=body, headers=headers)
             if not r.is_success:
-                log.warning(
-                    "control-plane %s -> %s: %s", path, r.status_code, r.text[:200]
-                )
+                log.warning("control-plane %s -> %s", path, _describe_cp_error(r))
         except httpx.HTTPError as e:
             # Never let control-plane outages break a run.
             log.warning("control-plane %s failed: %s", path, e)
@@ -210,7 +233,7 @@ class ControlPlaneClient:
             log.warning("control-plane introspect failed: %s", e)
             return None
         if not r.is_success:
-            log.warning("control-plane introspect -> %s", r.status_code)
+            log.warning("control-plane introspect -> %s", _describe_cp_error(r))
             return None
         return r.json()
 
@@ -235,7 +258,7 @@ class ControlPlaneClient:
             log.warning("control-plane revocations failed: %s", e)
             return None
         if not r.is_success:
-            log.warning("control-plane revocations -> %s", r.status_code)
+            log.warning("control-plane revocations -> %s", _describe_cp_error(r))
             return None
         return r.json()
 
@@ -257,7 +280,7 @@ class ControlPlaneClient:
             log.warning("control-plane domain-packs failed: %s", e)
             return None
         if not r.is_success:
-            log.warning("control-plane domain-packs -> %s", r.status_code)
+            log.warning("control-plane domain-packs -> %s", _describe_cp_error(r))
             return None
         return r.json()
 
@@ -274,7 +297,7 @@ class ControlPlaneClient:
             log.warning("control-plane pinned-key reload failed: %s", e)
             return None
         if not r.is_success:
-            log.warning("control-plane pinned-key reload -> %s", r.status_code)
+            log.warning("control-plane pinned-key reload -> %s", _describe_cp_error(r))
             return None
         return r.json()
 

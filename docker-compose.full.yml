@@ -43,6 +43,11 @@ services:
       POLICY_BACKEND: ${POLICY_BACKEND:-static}
       DOMAIN_PACKS: ${DOMAIN_PACKS:-finance}
       # Optional: agent→tenant bindings and pinned keys (comma-separated).
+      # MULTI-TENANT FAIL-FAST (CP #50): setting TENANT_AGENTS (or a
+      # tenant-bound TENANT_API_KEYS entry) while AUTH_REQUIRE_TENANT is false
+      # now refuses CP startup instead of failing open. If you populate
+      # CONTROL_PLANE_TENANT_AGENTS, also set
+      # CONTROL_PLANE_AUTH_REQUIRE_TENANT=true (see below).
       TENANT_AGENTS: ${CONTROL_PLANE_TENANT_AGENTS:-}
       CONTROL_PLANE_PINNED_KEYS: ${CONTROL_PLANE_PINNED_KEYS:-}
       # ── Round-3 sibling sync (CP #48/#49) ─────────────────────────────
@@ -68,6 +73,15 @@ services:
       # only delivers to in-cluster service names, so these stay off.
       WEBHOOK_SSRF_ALLOW_HTTP: ${CONTROL_PLANE_WEBHOOK_SSRF_ALLOW_HTTP:-false}
       WEBHOOK_SSRF_ALLOW_LOOPBACK: ${CONTROL_PLANE_WEBHOOK_SSRF_ALLOW_LOOPBACK:-false}
+      # ── Round-4 sibling sync (CP #50) — federation ────────────────────
+      # Peer issuers whose JWTs this CP accepts and peer /auth/revocations
+      # feeds it polls (reciprocal of the feed it already serves). Empty in
+      # the single-CP demo. TRUSTED_ISSUERS now REQUIRES an audience field
+      # per entry (<iss>|<alg>|<secret-or-jwks>|<audience>[|scope]); a
+      # REVOCATION_FEEDS entry's issuer must match a TRUSTED_ISSUERS iss and
+      # only polls when token issuance is enabled. See the CP .env.example.
+      TRUSTED_ISSUERS: ${CONTROL_PLANE_TRUSTED_ISSUERS:-}
+      REVOCATION_FEEDS: ${CONTROL_PLANE_REVOCATION_FEEDS:-}
     healthcheck:
       # node:alpine ships busybox wget, not curl.
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/healthz"]

@@ -20,6 +20,10 @@ import re
 # 1–63 chars. Hostnames are lowercased before matching.
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
+# The reserved tenant sentinel — the silent column default for untenanted
+# rows on both the registry and the control plane.
+RESERVED_TENANT = "default"
+
 
 def is_valid_authority(host: str) -> bool:
     """True iff ``host`` is a bare DNS hostname (no port/scheme/DID/uppercase).
@@ -48,4 +52,37 @@ def validate_origin_registry(value: str) -> None:
         )
 
 
-__all__ = ["is_valid_authority", "validate_origin_registry"]
+def is_reserved_tenant(tenant: str | None) -> bool:
+    """True iff ``tenant`` is the reserved ``default`` sentinel."""
+    return tenant == RESERVED_TENANT
+
+
+def reject_reserved_tenant(tenant: str | None) -> None:
+    """Raise ``ValueError`` if ``tenant`` explicitly asserts the reserved sentinel.
+
+    ``default`` is the silent column default for untenanted rows. Asserting it
+    via ``X-Tenant-Id`` or a signed ``tenant`` claim would alias the entire
+    untenanted bucket — a cross-boundary read/write. Both siblings now reject
+    it server-side (registry ``reject_reserved_tenant``, acdp-registry-core
+    ``c988ea4`` → 422 ``schema_violation``; control-plane ``AuthGuard``, #50 →
+    403 ``not_authorized``). We mirror the rule client-side so a caller who
+    sets ``tenant_id="default"`` fails fast locally with a clear message
+    instead of a confusing server rejection. Untenanted access stays reachable
+    only through the *absence* of an assertion (``None``), which passes through
+    untouched.
+    """
+    if is_reserved_tenant(tenant):
+        raise ValueError(
+            f"{RESERVED_TENANT!r} is a reserved tenant sentinel and cannot be "
+            "asserted via X-Tenant-Id or a token claim; omit the tenant "
+            "entirely for untenanted access"
+        )
+
+
+__all__ = [
+    "RESERVED_TENANT",
+    "is_reserved_tenant",
+    "is_valid_authority",
+    "reject_reserved_tenant",
+    "validate_origin_registry",
+]

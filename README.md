@@ -76,6 +76,7 @@ curl -N localhost:8000/runs/RUN_ID/events
 | `s17_supersession_authz` | Supersession authz | Non-owner / cross-tenant lineage takeover rejected |
 | `s18_idempotency` | Idempotent publish | Repeated `Idempotency-Key` replays one context |
 | `s19_cp_did_web_p256` | CP did:web P-256 | P-256 verification method the CP now resolves (offline) |
+| `s20_reserved_tenant` | Reserved-tenant guard | Asserting `default` tenant is rejected (offline) |
 
 > **V2 scenarios (S9–S15)** exercise the features that landed across the
 > sibling repos — P-256 signing, multi-tenancy, token revocation,
@@ -97,6 +98,13 @@ curl -N localhost:8000/runs/RUN_ID/events
 > context (degrades gracefully). **S19** runs **fully offline** and proves
 > the playground's P-256 agent emits exactly the JWK-only `JsonWebKey2020`
 > verification method the control plane's did:web resolver now accepts.
+>
+> **Round-4 scenario (S20)** tracks `acdp-control-plane` #50. **S20** runs
+> **fully offline** and proves the reserved `default` tenant can never be
+> *asserted* (via `X-Tenant-Id` or a token claim) — it would alias the
+> untenanted bucket. The registry returns 422 `schema_violation` and the CP
+> 403 `not_authorized`; the playground mirrors the rule client-side so a
+> caller fails fast locally.
 
 ## V2 protocol features
 

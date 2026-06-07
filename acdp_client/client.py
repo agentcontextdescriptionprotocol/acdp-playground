@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 import httpx
 
+from acdp_client.identifiers import reject_reserved_tenant
 from acdp_client.models import (
     CURSOR_ERROR_CODES,
     Body,
@@ -173,6 +174,10 @@ class AcdpClient:
         #   * fallback (default): send the header only when un-authenticated
         #   * always:             always send it (used to test conflict reject)
         #   * never:              never send it
+        # The reserved `default` sentinel may never be *asserted* as a tenant
+        # (registry + CP both reject it server-side, registry c988ea4 / CP #50).
+        # Fail fast here so a caller learns locally instead of via a 403/422.
+        reject_reserved_tenant(tenant_id)
         self._tenant_id = tenant_id
         self._tenant_header_mode: TenantHeaderMode = tenant_header_mode
 

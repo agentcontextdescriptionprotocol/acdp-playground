@@ -32,6 +32,7 @@ from typing import Any
 
 import httpx
 
+from acdp_client.identifiers import reject_reserved_tenant
 from acdp_client.models import parse_error_envelope
 from playground.config import Settings
 from playground.retry_after import parse_retry_after
@@ -201,9 +202,12 @@ class ControlPlaneClient:
             extra["X-ACDP-Event-Id"] = event_id
         if run_id := lower.get("x-run-id"):
             extra["X-Run-Id"] = run_id
-        # An explicit tenant arg wins; else honour an inbound header.
+        # An explicit tenant arg wins; else honour an inbound header. The
+        # reserved `default` sentinel may never be asserted — the CP AuthGuard
+        # (#50) 403s it, so reject it here with a clearer local error.
         tenant = tenant_id or lower.get("x-tenant-id")
         if tenant:
+            reject_reserved_tenant(tenant)
             extra["X-Tenant-Id"] = tenant
         await self._post("/ingest/acdp", raw_body, extra_headers=extra)
 
@@ -303,7 +307,11 @@ class ControlPlaneClient:
 
 
 def _tenant_header(tenant_id: str | None) -> dict[str, str] | None:
-    return {"X-Tenant-Id": tenant_id} if tenant_id else None
+    if not tenant_id:
+        return None
+    # The CP rejects an explicitly-asserted `default` tenant (#50); fail fast.
+    reject_reserved_tenant(tenant_id)
+    return {"X-Tenant-Id": tenant_id}
 
 
 _singleton: ControlPlaneClient | None = None

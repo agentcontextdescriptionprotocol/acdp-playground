@@ -44,6 +44,7 @@ async def main() -> int:
     failures += await _check_supersession_error_parse()
     failures += await _check_idempotent_replay()
     failures += await _check_typed_wire_errors()
+    failures += await _check_reserved_tenant_guard()
 
     print()
     if failures:
@@ -57,7 +58,7 @@ async def main() -> int:
 
 
 async def _check_scenarios_load() -> int:
-    print("\n[1/13] scenario catalog loads")
+    print("\n[1/14] scenario catalog loads")
     try:
         from playground.scenarios import list_scenarios
     except Exception as e:  # noqa: BLE001
@@ -73,7 +74,7 @@ async def _check_scenarios_load() -> int:
         "s12_key_rotation", "s13_policy_deny", "s14_domain_pack",
         "s15_supersession_lineage", "s16_dataref_ssrf",
         "s17_supersession_authz", "s18_idempotency",
-        "s19_cp_did_web_p256",
+        "s19_cp_did_web_p256", "s20_reserved_tenant",
     }
     got = {s.id for s in scenarios}
     missing = expected - got
@@ -87,7 +88,7 @@ async def _check_scenarios_load() -> int:
 
 
 async def _check_sdk_round_trip() -> int:
-    print("\n[2/13] acdp-py SDK round-trip")
+    print("\n[2/14] acdp-py SDK round-trip")
     try:
         from acdp import AcdpProducer, AcdpVerifier
     except Exception as e:  # noqa: BLE001
@@ -133,7 +134,7 @@ async def _check_sdk_round_trip() -> int:
 
 
 async def _check_agent_publish_path() -> int:
-    print("\n[3/13] BasePlaygroundAgent.publish against fake registry")
+    print("\n[3/14] BasePlaygroundAgent.publish against fake registry")
     try:
         from acdp import AcdpProducer
         from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -194,7 +195,7 @@ async def _check_agent_publish_path() -> int:
 
 
 async def _check_webhook_signature() -> int:
-    print("\n[4/13] webhook signature verify")
+    print("\n[4/14] webhook signature verify")
     secret = "test-secret"
     body = b'{"type":"context_published","agent_id":"did:web:x","ctx_id":"acdp://r/1"}'
     expected = f"sha256={hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}"
@@ -229,7 +230,7 @@ async def _check_control_plane_forwarding() -> int:
     ControlPlaneClient signs + forwards run lifecycle + webhook payloads
     correctly. Replaces the previous "control-plane stub deferred" gap
     (deferred-plan §13.3)."""
-    print("\n[5/13] control-plane forwarding (in-process stub)")
+    print("\n[5/14] control-plane forwarding (in-process stub)")
 
     try:
         import uvicorn
@@ -341,7 +342,7 @@ async def _check_control_plane_forwarding() -> int:
 
 
 async def _check_p256_round_trip() -> int:
-    print("\n[6/13] ECDSA-P256 producer + verifier round-trip")
+    print("\n[6/14] ECDSA-P256 producer + verifier round-trip")
     try:
         from acdp import AcdpP256Producer, AcdpVerifier
     except ImportError:
@@ -384,7 +385,7 @@ async def _check_p256_round_trip() -> int:
 async def _check_jcs_number_stability() -> int:
     """RFC 8785 number canonicalization must be stable: the same body with a
     float metadata value hashes identically across two independent builds."""
-    print("\n[7/13] JCS RFC 8785 numeric canonicalization stability")
+    print("\n[7/14] JCS RFC 8785 numeric canonicalization stability")
     from acdp import AcdpProducer, AcdpVerifier
 
     producer = AcdpProducer.from_seed(
@@ -422,7 +423,7 @@ async def _check_jcs_number_stability() -> int:
 async def _check_extended_body_fields() -> int:
     """The agent threads data_refs / data_period / expires_at into the
     publish request, and omits them when unset."""
-    print("\n[8/13] extended body fields (data_refs / data_period / expires_at)")
+    print("\n[8/14] extended body fields (data_refs / data_period / expires_at)")
     from acdp import AcdpProducer
     from acdp_client.models import PublishResponse
     from playground.agents.base import AgentTask, BasePlaygroundAgent
@@ -473,7 +474,7 @@ async def _check_extended_body_fields() -> int:
 async def _check_jcs_numeric_vectors() -> int:
     """The pure-Python JCS reference reproduces the RFC's can-011 vectors
     (negative-zero -> '0', exponential bands, integer exactness)."""
-    print("\n[9/13] JCS RFC 8785 numeric conformance vectors")
+    print("\n[9/14] JCS RFC 8785 numeric conformance vectors")
     import hashlib as _hashlib
     from pathlib import Path
 
@@ -502,7 +503,7 @@ async def _check_jcs_numeric_vectors() -> int:
 async def _check_ssrf_guard() -> int:
     """The consumer SSRF guard blocks IMDS, mixed-answer DNS, cross-port
     redirects, and non-https — without touching the network."""
-    print("\n[10/13] consumer SSRF guard (data_refs)")
+    print("\n[10/14] consumer SSRF guard (data_refs)")
     from acdp_client.safe_http import (
         SsrfError,
         SsrfPolicy,
@@ -538,7 +539,7 @@ async def _check_ssrf_guard() -> int:
 async def _check_supersession_error_parse() -> int:
     """A superseded_target envelope surfaces as SupersededError with reason
     (lineage-takeover prevention contract)."""
-    print("\n[11/13] supersession error envelope -> SupersededError")
+    print("\n[11/14] supersession error envelope -> SupersededError")
     import httpx
 
     from acdp_client.client import AcdpClient, SupersededError
@@ -570,7 +571,7 @@ async def _check_supersession_error_parse() -> int:
 async def _check_idempotent_replay() -> int:
     """A repeated Idempotency-Key replays one ctx_id; the header is forwarded
     verbatim and never pre-validated (registry #24 contract, client side)."""
-    print("\n[12/13] idempotent publish replay")
+    print("\n[12/14] idempotent publish replay")
     import itertools
 
     import httpx
@@ -614,7 +615,7 @@ async def _check_idempotent_replay() -> int:
 async def _check_typed_wire_errors() -> int:
     """not_authorized -> 403 NotAuthorizedError; oversized body -> 413
     PayloadTooLargeError (RFC-ACDP-0007 §5 / registry #24, #26)."""
-    print("\n[13/13] typed §5 wire errors (403 not_authorized, 413)")
+    print("\n[13/14] typed §5 wire errors (403 not_authorized, 413)")
     import httpx
 
     from acdp_client.client import (
@@ -653,6 +654,48 @@ async def _check_typed_wire_errors() -> int:
         finally:
             await client.aclose()
     print("  ok: 403 -> NotAuthorizedError, 413 -> PayloadTooLargeError")
+    return 0
+
+
+async def _check_reserved_tenant_guard() -> int:
+    """The reserved `default` tenant can never be *asserted* (registry 422
+    schema_violation / CP 403 not_authorized, mirrored client-side; CP #50)."""
+    print("\n[14/14] reserved-tenant guard (default sentinel)")
+    from acdp_client import AcdpClient, RESERVED_TENANT, reject_reserved_tenant
+    from playground.control_plane import _tenant_header
+
+    if RESERVED_TENANT != "default":
+        print(f"  FAIL: RESERVED_TENANT={RESERVED_TENANT!r}, expected 'default'")
+        return 1
+
+    # default asserted -> blocked everywhere; absence / real tenant -> allowed.
+    try:
+        reject_reserved_tenant("default")
+        print("  FAIL: reject_reserved_tenant('default') did not raise")
+        return 1
+    except ValueError:
+        pass
+    reject_reserved_tenant(None)  # untenanted is legitimate
+    reject_reserved_tenant("tenant-a")  # real tenant is legitimate
+
+    try:
+        AcdpClient("http://reg.test", tenant_id="default")
+        print("  FAIL: AcdpClient(tenant_id='default') did not raise")
+        return 1
+    except ValueError:
+        pass
+
+    try:
+        _tenant_header("default")
+        print("  FAIL: _tenant_header('default') did not raise")
+        return 1
+    except ValueError:
+        pass
+    if _tenant_header("tenant-a") != {"X-Tenant-Id": "tenant-a"}:
+        print("  FAIL: _tenant_header('tenant-a') did not stamp the header")
+        return 1
+
+    print("  ok: 'default' rejected at guard/client/bridge; None + real allowed")
     return 0
 
 

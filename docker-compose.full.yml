@@ -97,3 +97,26 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+
+  # Next.js orchestration + observability console. Demo mode is baked OFF at
+  # build time (NEXT_PUBLIC_* is inlined by Next) so the browser drives the
+  # real stack; the Next server proxies to the services below by their compose
+  # DNS names. Visit http://localhost:3000.
+  ui-console:
+    build:
+      context: ../acdp-ui-console
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_ACDP_UI_DEMO_MODE: "false"
+    ports: ["3000:3000"]
+    environment:
+      PLAYGROUND_BASE_URL: http://playground:8000
+      CONTROL_PLANE_BASE_URL: http://control-plane:3001
+      REGISTRY_A_BASE_URL: http://registry-a:8100
+      REGISTRY_B_BASE_URL: http://registry-b:8200
+      CONTROL_PLANE_API_KEY: ${CONTROL_PLANE_ADMIN_TOKEN:-playground-cp-admin}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      playground:
+        condition: service_started

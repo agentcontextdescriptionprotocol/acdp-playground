@@ -4,6 +4,43 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-07 — Playground sibling sync, round 5 (delegate JCS + SSRF to the SDK)
+
+Consumes `acdp-rs` PR #32, which exposed the JCS canonicalizer and the SSRF
+screen through the Python SDK (`acdp-py` 0.2.0: `AcdpCanonicalizer`,
+`AcdpSsrfPolicy` / `SsrfRejected`, with a stable `SsrfReason` taxonomy in the
+Rust core). The playground now delegates to those instead of maintaining its
+own copies. Requires a rebuilt wheel (`make build-sdk`), now pinned
+`acdp>=0.2.0`.
+
+### Client / SDK
+
+- **Deleted `acdp_client/jcs_numbers.py`** (~130 lines). JCS canonicalization
+  + content hashing now run in Rust via `acdp.AcdpCanonicalizer`; the
+  `can-011` RFC vectors gate the binding through `tests/test_jcs_vectors.py`
+  instead of a second pure-Python implementation.
+- **Shrank `acdp_client/safe_http.py`** to the orchestration the Rust core
+  doesn't own: DNS resolution, the mixed-answer rejection loop (plan D3), the
+  `httpx` fetch with same-authority-redirect + size caps, and `content_hash`
+  verification. The forbidden IP-range tables, the v4-mapped/NAT64 coercion,
+  and the scheme/redirect predicates are gone — `check_url`, `ip_is_forbidden`,
+  `same_authority`, and `screen_host` now delegate to `acdp.AcdpSsrfPolicy`.
+  Public names are unchanged so `s16_dataref_ssrf.py` and
+  `AcdpClient.fetch_data_ref` don't move.
+- **Reason taxonomy** on `SsrfError.reason` now follows the Rust `SsrfReason`
+  codes: `169.254.*` / IPv6 link-local / NAT64 → `imds` (was `link_local` /
+  `nat64` / `ipv6_special`), `0.0.0.0` → `multicast_or_reserved`, ULA →
+  `private`, `http://` → `non_https`. The userinfo guard
+  (`forbidden_userinfo`) stays in Python — the Rust `check_url` does not
+  reject credentials in the authority (filed as an acdp-rs follow-up).
+
+### Tooling
+
+- `smoke_test.py` JCS check drives `AcdpCanonicalizer`; tests repointed.
+- Rebuilding to 0.2.0 also clears the prior **stale-wheel** failures
+  (`build_publish_request(data_refs=…)` / `expected_lineage_id`): full suite
+  now **172 passing**, smoke **14/14** (previously 3 failing + smoke aborting).
+
 ## 2026-06-06 — Playground sibling sync, round 4 (reserved tenant + federation)
 
 Tracks `acdp-control-plane` #50, which brought the control plane to

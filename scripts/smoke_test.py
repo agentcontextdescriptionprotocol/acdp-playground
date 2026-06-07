@@ -472,13 +472,14 @@ async def _check_extended_body_fields() -> int:
 
 
 async def _check_jcs_numeric_vectors() -> int:
-    """The pure-Python JCS reference reproduces the RFC's can-011 vectors
-    (negative-zero -> '0', exponential bands, integer exactness)."""
+    """The Rust JCS canonicalizer (acdp.AcdpCanonicalizer, acdp-py 0.2.0)
+    reproduces the RFC's can-011 vectors (negative-zero -> '0', exponential
+    bands, integer exactness)."""
     print("\n[9/14] JCS RFC 8785 numeric conformance vectors")
     import hashlib as _hashlib
     from pathlib import Path
 
-    from acdp_client.jcs_numbers import canonicalize
+    from acdp import AcdpCanonicalizer
 
     rfc_dir = Path(os.environ.get("ACDP_RFC_DIR", os.path.join(ROOT, "..", "agentcontextdescriptionprotocol")))
     vectors_path = rfc_dir / "schemas" / "conformance" / "can-011-jcs-numeric-vectors.json"
@@ -487,7 +488,7 @@ async def _check_jcs_numeric_vectors() -> int:
         return 0
     vectors = json.loads(vectors_path.read_text())["vectors"]
     for vec in vectors:
-        got = canonicalize(vec["input"])
+        got = AcdpCanonicalizer.canonicalize(json.dumps(vec["input"]))
         want = vec["expected"]["canonical_form"]
         if got != want:
             print(f"  FAIL {vec['name']}: {got!r} != {want!r}")

@@ -36,11 +36,17 @@ services:
         STORAGE_FEATURE: storage-sqlite
     ports: ["8100:8100"]
     environment:
+      # ACDP_REGISTRY_CONFIG is read directly via std::env (single underscore).
       ACDP_REGISTRY_CONFIG: /app/config.toml
-      ACDP_REGISTRY_WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
+      # The remaining ACDP_REGISTRY__* vars go through the `config` crate, which
+      # (v0.14) uses the nesting separator "__" as the PREFIX separator too — so
+      # the prefix must be followed by "__". A single-underscore
+      # `ACDP_REGISTRY_AUTH__JWT_SECRET` silently fails to map and the secret
+      # reads empty (the registry then aborts: "jwt_secret is empty").
+      ACDP_REGISTRY__WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
       # 32-byte base64 secret. The registry refuses to start with the
       # literal "changeme"; generate one with `openssl rand -base64 32`.
-      ACDP_REGISTRY_AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
+      ACDP_REGISTRY__AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
       RUST_LOG: info,acdp=info,acdp_registry=info
     volumes:
       - ./config/registry-a.toml:/app/config.toml:ro
@@ -64,11 +70,17 @@ services:
         STORAGE_FEATURE: storage-sqlite
     ports: ["8200:8200"]
     environment:
+      # ACDP_REGISTRY_CONFIG is read directly via std::env (single underscore).
       ACDP_REGISTRY_CONFIG: /app/config.toml
-      ACDP_REGISTRY_WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
+      # The remaining ACDP_REGISTRY__* vars go through the `config` crate, which
+      # (v0.14) uses the nesting separator "__" as the PREFIX separator too — so
+      # the prefix must be followed by "__". A single-underscore
+      # `ACDP_REGISTRY_AUTH__JWT_SECRET` silently fails to map and the secret
+      # reads empty (the registry then aborts: "jwt_secret is empty").
+      ACDP_REGISTRY__WEBHOOK__SECRET: ${WEBHOOK_SECRET:-playground-dev-secret}
       # 32-byte base64 secret. The registry refuses to start with the
       # literal "changeme"; generate one with `openssl rand -base64 32`.
-      ACDP_REGISTRY_AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
+      ACDP_REGISTRY__AUTH__JWT_SECRET: ${ACDP_REGISTRY_JWT_SECRET:-cGxheWdyb3VuZC1zZWNyZXQtMzItYnl0ZXMtb2YtdGVzdC1qd3Q=}
       RUST_LOG: info,acdp=info,acdp_registry=info
     volumes:
       - ./config/registry-b.toml:/app/config.toml:ro

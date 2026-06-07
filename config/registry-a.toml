@@ -36,9 +36,10 @@ challenge_ttl_seconds  = 300
 token_leeway_seconds   = 30
 # jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
 #
-# Strict tenancy is OFF so the legacy scenarios (which assert no tenant)
-# keep working; the tenant-isolation scenario asserts isolation between
-# the bound agents below rather than relying on require_tenant.
+# Strict tenancy is OFF so the legacy scenarios (S1–S9) and the demo can
+# publish anonymously / unbound (a producer-signed publish with no
+# tenant-bound token resolves to no tenant, which `require_tenant = true`
+# would reject — see acdp-registry context::tenant_for_publish).
 require_tenant = false
 
 # Admin tokens gate POST /admin/pinned-keys/reload (hot key rotation) and
@@ -47,18 +48,24 @@ require_tenant = false
 admin_tokens = ["playground-registry-admin"]
 
 # ── Tenant bindings (issuer-authoritative) ───────────────────────────
-# The registry stamps the `tenant` claim on tokens it issues to these
-# agent DIDs (RFC-ACDP-0008 §6.4: the JWT claim is the authoritative
-# tenant signal; X-Tenant-Id is only a fallback for unbound publishes).
-# DIDs are slug-stable across runs (only the key rotates), so pinning
-# them here is safe.
-[[auth.tenant_agents]]
-agent_did = "did:web:registry-a.playground.local:agents:tenant-a-agent"
-tenant_id = "tenant-a"
-
-[[auth.tenant_agents]]
-agent_did = "did:web:registry-a.playground.local:agents:tenant-b-agent"
-tenant_id = "tenant-b"
+# DISABLED in the default stack. The registry fails startup when
+# `auth.tenant_agents` is set while `auth.require_tenant = false`
+# (multi-tenant fail-fast, SEC #17): a request resolving to no tenant
+# would bypass the tenant filter. But `require_tenant = true` would in
+# turn reject the anonymous/unbound publishes the rest of the playground
+# relies on — the two are mutually exclusive on a single registry.
+#
+# S10 (tenant isolation) needs these bindings AND `require_tenant = true`
+# AND live token issuance (DID-doc hosting). The default stack has none of
+# those, so S10 already degrades gracefully. To exercise tenancy for real,
+# run a dedicated registry profile with BOTH lines below uncommented and
+# `require_tenant = true`:
+#   [[auth.tenant_agents]]
+#   agent_did = "did:web:registry-a.playground.local:agents:tenant-a-agent"
+#   tenant_id = "tenant-a"
+#   [[auth.tenant_agents]]
+#   agent_did = "did:web:registry-a.playground.local:agents:tenant-b-agent"
+#   tenant_id = "tenant-b"
 
 # ── EdDSA JWT signing + JWKS federation (optional) ───────────────────
 # Default is HS256 (symmetric, via ACDP_REGISTRY_AUTH__JWT_SECRET). To

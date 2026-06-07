@@ -30,11 +30,12 @@ token_leeway_seconds   = 30
 require_tenant = false
 admin_tokens   = ["playground-registry-admin"]
 
-# Tenant bindings (see registry-a.toml for the rationale). Registry-b
-# carries the tenant-b agent for the cross-registry tenant scenario.
-[[auth.tenant_agents]]
-agent_did = "did:web:registry-b.playground.local:agents:tenant-b-agent"
-tenant_id = "tenant-b"
+# Tenant bindings DISABLED in the default stack (multi-tenant fail-fast —
+# see registry-a.toml for the full rationale). To exercise tenancy, set
+# `require_tenant = true` and uncomment:
+#   [[auth.tenant_agents]]
+#   agent_did = "did:web:registry-b.playground.local:agents:tenant-b-agent"
+#   tenant_id = "tenant-b"
 
 [webhook]
 # Disabled for local-stack demos (registry SSRF refuses http://); see

@@ -141,18 +141,21 @@ the siblings just after the V2 sync.
   IMDS/ULA/NAT64/v4-mapped ranges with **mixed-answer rejection**,
   **same-authority** (scheme+host+effective-port) redirects only, and
   size/timeout caps. `AcdpClient.fetch_data_ref(...)` also verifies the
-  `content_hash`. This is enforced in pure Python because the playground's
-  `httpx` client never goes through the Rust SDK's `RegistryClient` (where
-  the equivalent guard lives). Validated against the RFC's `*-ssrf-*`
-  fixtures; demoed offline by **S16**.
+  `content_hash`. The per-address/URL **classification is delegated to the
+  Rust SDK** (`acdp.AcdpSsrfPolicy`, acdp-py 0.2.0) — the playground keeps
+  only the host-language orchestration (DNS, the mixed-answer loop, the
+  `httpx` fetch) because its client never goes through the Rust
+  `RegistryClient`. Validated against the RFC's `*-ssrf-*` fixtures; demoed
+  offline by **S16**.
 - **Error wire envelope.** `AcdpHTTPError` parses the RFC-ACDP-0007 §4
   `application/acdp+json` envelope (`code`/`message`/`details`); a denied
   or non-owner supersession surfaces as `SupersededError` with a `.reason`
   (`not_found`, `cross_registry_supersession_unsupported`, …).
-- **JCS numeric reference.** `acdp_client.jcs_numbers` is a tested
-  pure-Python RFC 8785 §3.2.2.3 reference (negative-zero → `0`,
-  exponential bands, integer exactness) checked against the RFC's `can-011`
-  vectors — the wire form producers must hit.
+- **JCS canonicalization.** `acdp.AcdpCanonicalizer` (the Rust SDK, acdp-py
+  0.2.0) produces the RFC 8785 §3.2.2.3 canonical form (negative-zero → `0`,
+  exponential bands, integer exactness) — the wire form producers must hit.
+  The playground drives it through the binding and gates it on the RFC's
+  `can-011` vectors instead of shipping a second pure-Python implementation.
 - **Cooperative token throttling.** `TokenManager` honours a `429 +
   Retry-After` (RFC 9110) on `/auth/challenge` and `/auth/token` with one
   capped retry — matching the registry's per-agent challenge throttle.

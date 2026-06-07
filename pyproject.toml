@@ -11,7 +11,9 @@ dependencies = [
     "pydantic-settings>=2.4",
     "python-multipart>=0.0.9",
     "sse-starlette>=2.1",
-    "acdp",
+    # 0.2.0 adds AcdpCanonicalizer + AcdpSsrfPolicy, which acdp_client now
+    # delegates JCS canonicalization and SSRF classification to.
+    "acdp>=0.2.0",
 ]
 
 [project.optional-dependencies]

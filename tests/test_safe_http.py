@@ -1,4 +1,12 @@
-"""Tests for the consumer SSRF guard (acdp_client.safe_http)."""
+"""Tests for the consumer SSRF guard (acdp_client.safe_http).
+
+Classification is delegated to the Rust ``acdp.AcdpSsrfPolicy`` (acdp-py
+0.2.0), so the rejection ``reason`` values follow the Rust ``SsrfReason``
+taxonomy (``loopback`` / ``private`` / ``imds`` / ``multicast_or_reserved`` /
+``non_https`` / ``ip_literal`` / ``invalid_url`` / ``cross_authority``). The
+orchestration (DNS mixed-answer loop, fetch transport) and the userinfo guard
+stay in Python and keep their own reason tokens.
+"""
 
 from __future__ import annotations
 
@@ -34,16 +42,16 @@ PROD = SsrfPolicy.production()
         ("10.0.0.1", "private"),
         ("172.16.5.5", "private"),
         ("192.168.1.1", "private"),
-        ("169.254.169.254", "link_local"),  # IMDS
-        ("169.254.1.1", "link_local"),
+        ("169.254.169.254", "imds"),  # link-local / IMDS
+        ("169.254.1.1", "imds"),
         ("100.64.0.1", "private"),  # CGNAT
         ("224.0.0.1", "multicast_or_reserved"),
-        ("0.0.0.0", "private"),
-        ("fc00::1", "ipv6_special"),  # ULA
-        ("fe80::1", "ipv6_special"),  # link-local
+        ("0.0.0.0", "multicast_or_reserved"),  # "this host" / unspecified
+        ("fc00::1", "private"),  # ULA
+        ("fe80::1", "imds"),  # IPv6 link-local
         ("::1", "loopback"),
-        ("::ffff:169.254.169.254", "link_local"),  # v4-mapped IMDS
-        ("64:ff9b::a9fe:a9fe", "nat64"),  # NAT64 -> IMDS
+        ("::ffff:169.254.169.254", "imds"),  # v4-mapped IMDS
+        ("64:ff9b::a9fe:a9fe", "imds"),  # NAT64 -> IMDS
     ],
 )
 def test_ip_is_forbidden(ip, expect_reason):
@@ -55,7 +63,7 @@ def test_test_loopback_policy_allows_loopback_but_not_private():
     assert ip_is_forbidden("127.0.0.1", pol) is None
     assert ip_is_forbidden("::1", pol) is None
     assert ip_is_forbidden("10.0.0.1", pol) == "private"
-    assert ip_is_forbidden("169.254.169.254", pol) == "link_local"
+    assert ip_is_forbidden("169.254.169.254", pol) == "imds"
 
 
 # ── check_url ────────────────────────────────────────────────────────────────
@@ -64,7 +72,7 @@ def test_test_loopback_policy_allows_loopback_but_not_private():
 def test_check_url_rejects_http():
     with pytest.raises(SsrfError) as e:
         check_url("http://data.example.com/x", PROD)
-    assert e.value.reason == "forbidden_scheme"
+    assert e.value.reason == "non_https"
 
 
 def test_check_url_rejects_userinfo():

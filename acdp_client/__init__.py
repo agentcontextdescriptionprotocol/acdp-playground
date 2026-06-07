@@ -13,7 +13,13 @@ from acdp_client.client import (
     PayloadTooLargeError,
     SupersededError,
 )
-from acdp_client.identifiers import is_valid_authority, validate_origin_registry
+from acdp_client.identifiers import (
+    RESERVED_TENANT,
+    is_reserved_tenant,
+    is_valid_authority,
+    reject_reserved_tenant,
+    validate_origin_registry,
+)
 from acdp_client.models import (
     ERROR_CODES,
     SIGNATURE_ERROR_CODES,
@@ -69,6 +75,7 @@ __all__ = [
     "NotAuthorizedError",
     "PayloadTooLargeError",
     "PublishResponse",
+    "RESERVED_TENANT",
     "RefreshReason",
     "SearchHit",
     "SearchResponse",
@@ -85,10 +92,12 @@ __all__ = [
     "default_token_manager",
     "fetch_data_ref",
     "is_p256",
+    "is_reserved_tenant",
     "is_valid_authority",
     "parse_error_envelope",
     "producer_algorithm",
     "public_key_material",
+    "reject_reserved_tenant",
     "validate_origin_registry",
     "verify_signature",
 ]

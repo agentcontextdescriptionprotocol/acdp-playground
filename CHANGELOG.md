@@ -4,6 +4,51 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-06 — Playground sibling sync, round 4 (reserved tenant + federation)
+
+Tracks `acdp-control-plane` #50, which brought the control plane to
+federation parity with the updated `acdp-rs` / `acdp-registry-rs`: a
+cross-issuer revocation poller, a reserved-tenant guard, multi-tenant
+fail-fast on startup, and a now-required audience binding per trusted
+issuer. The CP-internal poller and the per-issuer audience requirement
+need no playground code; the reserved-tenant rule and the config coupling
+do. No SDK rebuild required.
+
+### Client / SDK
+
+- **Reserved-tenant guard.** `acdp_client.identifiers.reject_reserved_tenant`
+  (plus `RESERVED_TENANT` / `is_reserved_tenant`) refuses the `default`
+  sentinel as an *asserted* tenant. It is the silent column default for
+  untenanted rows, so asserting it via `X-Tenant-Id` or a signed `tenant`
+  claim would alias the entire untenanted bucket — a cross-boundary
+  read/write. `AcdpClient` calls it at construction (`tenant_id="default"`
+  fails fast) and the control-plane bridge calls it before stamping the
+  header, so a caller learns locally instead of via a server 422/403.
+  Untenanted access stays reachable only through the *absence* of an
+  assertion. Mirrors the registry's `reject_reserved_tenant`
+  (acdp-registry-core `c988ea4`) and the CP `AuthGuard` (#50).
+
+### Scenarios + tooling
+
+- **S20 — reserved-tenant rejection.** Fully offline: the standalone guard
+  blocks `default` and passes `None` / real tenants through; the client
+  constructor and CP bridge both refuse `default`. The live wire contract
+  (registry 422 `schema_violation` / CP 403 `not_authorized`) is asserted
+  against a mock transport in `tests/test_reserved_tenant.py`.
+- **smoke_test.py** grows a reserved-tenant client-guard check (14 total).
+
+### Config / control plane
+
+- **Multi-tenant fail-fast.** `docker-compose.full.yml` and `.env.example`
+  now warn that setting `TENANT_AGENTS` (or a tenant-bound key) while
+  `AUTH_REQUIRE_TENANT=false` refuses CP startup — populate
+  `CONTROL_PLANE_TENANT_AGENTS` only alongside
+  `CONTROL_PLANE_AUTH_REQUIRE_TENANT=true`.
+- **Federation knobs.** Documented the CP's new `TRUSTED_ISSUERS` (audience
+  now required per entry) and `REVOCATION_FEEDS` env, wired through as
+  empty-by-default `CONTROL_PLANE_TRUSTED_ISSUERS` /
+  `CONTROL_PLANE_REVOCATION_FEEDS` overrides for the single-CP demo.
+
 ## 2026-06-03 — Playground sibling sync, round 3 (wire conformance)
 
 Tracks the P0/P1 remediation + RFC-ACDP-0007 §5 wire-conformance wave that

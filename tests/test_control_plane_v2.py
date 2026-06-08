@@ -125,6 +125,66 @@ async def test_reload_pinned_keys():
     await cp.aclose()
 
 
+async def test_events_query_and_cursor_walk():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["params"] = dict(request.url.params)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={"data": [{"eventTs": 100}], "limit": 500, "nextCursor": 100},
+        )
+
+    cp = _cp(handler)
+    out = await cp.events(limit=99999, before_ts="200", run_id="r1", event_type="context_published")
+    assert out == {"data": [{"eventTs": 100}], "limit": 500, "nextCursor": 100}
+    assert captured["path"] == "/events"
+    assert captured["params"] == {
+        "limit": "99999",
+        "beforeTs": "200",
+        "runId": "r1",
+        "eventType": "context_published",
+    }
+    assert captured["auth"] == "Bearer admin-tok"
+    await cp.aclose()
+
+    # No admin token → no call, returns None.
+    cp2 = _cp(handler, control_plane_admin_token="")
+    assert await cp2.events() is None
+    await cp2.aclose()
+
+
+async def test_declare_capability_posts_dto():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        import json as _json
+
+        captured["body"] = _json.loads(request.content)
+        captured["tenant"] = request.headers.get("x-tenant-id")
+        return httpx.Response(201, json={"agent_did": "did:web:x", "capability_uri": "urn:acdp:cap:y"})
+
+    cp = _cp(handler)
+    out = await cp.declare_capability(
+        agent_did="did:web:x",
+        capability_uri="urn:acdp:cap:y",
+        declared_at="2026-06-08T00:00:00Z",
+        key_id="did:web:x#key-1",
+        algorithm="ecdsa-p256",
+        signature="c2ln",
+        tenant_id="tenant-a",
+    )
+    assert out == {"agent_did": "did:web:x", "capability_uri": "urn:acdp:cap:y"}
+    assert captured["path"] == "/capabilities"
+    assert captured["body"]["algorithm"] == "ecdsa-p256"
+    assert captured["body"]["signature"] == "c2ln"
+    assert captured["tenant"] == "tenant-a"
+    await cp.aclose()
+
+
 async def test_retry_after_triggers_one_retry():
     calls = {"n": 0}
 

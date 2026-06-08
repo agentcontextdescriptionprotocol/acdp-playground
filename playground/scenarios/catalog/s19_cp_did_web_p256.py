@@ -28,8 +28,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from acdp import AcdpDidDocument, DidResolutionError
-
+from acdp_client import AcdpDidDocument, DidResolutionError
 from acdp_client.models import StepEvent
 from acdp_client.signing import producer_algorithm
 from playground.config import get_settings

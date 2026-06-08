@@ -7,7 +7,8 @@ Exercises the wiring without a running registry or LLM. Verifies:
 - The webhook signature path validates a payload that we hand-sign
 
 Run:
-    uv run python scripts/smoke_test.py
+    uv run python scripts/smoke_test.py            # offline (in-process stubs)
+    uv run python scripts/smoke_test.py --live     # + conformance vs. `make up-full`
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 
-async def main() -> int:
+async def main(live: bool = False) -> int:
     print("== ACDP playground smoke test ==")
     failures = 0
 
@@ -46,12 +47,44 @@ async def main() -> int:
     failures += await _check_typed_wire_errors()
     failures += await _check_reserved_tenant_guard()
 
+    if live:
+        failures += await _check_live_conformance()
+
     print()
     if failures:
         print(f"FAIL: {failures} check(s) failed")
         return 1
     print("PASS: all smoke checks passed")
     return 0
+
+
+async def _check_live_conformance() -> int:
+    """Drive the real registry + control-plane binaries (``make up-full``).
+
+    The offline checks above all run against in-process stubs. With ``--live``
+    we additionally assert the externally-observable contracts against the real
+    services — the layer that catches mock drift (e.g. reserved-tenant 422→400).
+    """
+    print("\n[live] conformance against the running full stack")
+    import httpx
+
+    from playground.conformance import ALL_PROBES, LiveConfig
+
+    cfg = LiveConfig.from_settings()
+    print(f"  registry={cfg.registry_url} control_plane={cfg.control_plane_url}")
+    failures = 0
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for probe in ALL_PROBES:
+            try:
+                summary = await probe(client, cfg)
+                print(f"  ok: {summary}")
+            except AssertionError as e:
+                print(f"  FAIL: {probe.__name__}: {e}")
+                failures += 1
+            except Exception as e:  # noqa: BLE001 — unreachable stack, etc.
+                print(f"  FAIL: {probe.__name__}: unreachable/error: {e}")
+                failures += 1
+    return failures
 
 
 # ── checks ───────────────────────────────────────────────────────────────
@@ -75,6 +108,7 @@ async def _check_scenarios_load() -> int:
         "s15_supersession_lineage", "s16_dataref_ssrf",
         "s17_supersession_authz", "s18_idempotency",
         "s19_cp_did_web_p256", "s20_reserved_tenant",
+        "s21_capabilities_p256",
     }
     got = {s.id for s in scenarios}
     missing = expected - got
@@ -701,4 +735,7 @@ async def _check_reserved_tenant_guard() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    # `--live` adds a conformance pass against a running `make up-full` stack;
+    # without it the smoke test stays fully offline (in-process stubs).
+    _live = "--live" in sys.argv[1:]
+    sys.exit(asyncio.run(main(live=_live)))

@@ -10,6 +10,8 @@ operator surface when an admin token is configured:
 
 * ``introspect`` — RFC 7662 token introspection (``POST /auth/introspect``)
 * ``revocations`` — cross-issuer revocation feed (``GET /auth/revocations``)
+* ``events`` — keyset-paginated cross-run event history (``GET /events``)
+* ``declare_capability`` — self-declare an agent capability (``POST /capabilities``)
 * ``reload_pinned_keys`` — hot key-rotation (``POST /admin/pinned-keys/reload``)
 
 Forwarded webhooks preserve the registry's ``X-ACDP-Event``,
@@ -263,6 +265,90 @@ class ControlPlaneClient:
             return None
         if not r.is_success:
             log.warning("control-plane revocations -> %s", _describe_cp_error(r))
+            return None
+        return r.json()
+
+    async def events(
+        self,
+        *,
+        before_ts: str | None = None,
+        limit: int = 500,
+        run_id: str | None = None,
+        event_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Read the CP cross-run event history (``GET /events``, admin-gated).
+
+        Returns the keyset-paginated page ``{"data": [...], "limit": <int>,
+        "nextCursor": <ts|null>}``. CP #51 caps ``limit`` server-side, so the
+        echoed ``limit`` may be lower than requested. Walk to older pages by
+        passing the previous page's ``nextCursor`` back as ``before_ts``.
+        Returns ``None`` when the bridge is disabled or unauthorized.
+        """
+        admin = self._admin_headers()
+        if not self.enabled or admin is None:
+            return None
+        url = self._base + "/events"
+        params: dict[str, Any] = {"limit": limit}
+        if before_ts is not None:
+            params["beforeTs"] = before_ts
+        if run_id is not None:
+            params["runId"] = run_id
+        if event_type is not None:
+            params["eventType"] = event_type
+        try:
+            client = await self._client()
+            r = await client.get(url, params=params, headers=admin)
+        except httpx.HTTPError as e:
+            log.warning("control-plane events failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane events -> %s", _describe_cp_error(r))
+            return None
+        return r.json()
+
+    async def declare_capability(
+        self,
+        *,
+        agent_did: str,
+        capability_uri: str,
+        declared_at: str,
+        key_id: str,
+        algorithm: str,
+        signature: str,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Self-declare an agent capability (``POST /capabilities``, auth-gated).
+
+        ``signature`` must be base64 over
+        ``acdp-cap:v1:<agent_did>:<capability_uri>:<declared_at>`` and verify
+        against the agent's pinned key. CP #51 lets ``algorithm`` be either
+        ``ed25519`` or ``ecdsa-p256`` — the DTO previously rejected P-256 at the
+        validation boundary. Returns the declaration record on success, else
+        ``None``.
+        """
+        admin = self._admin_headers()
+        if not self.enabled or admin is None:
+            return None
+        url = self._base + "/capabilities"
+        body = {
+            "agent_did": agent_did,
+            "capability_uri": capability_uri,
+            "declared_at": declared_at,
+            "key_id": key_id,
+            "algorithm": algorithm,
+            "signature": signature,
+        }
+        headers = {**admin, "Content-Type": "application/json"}
+        if extra := _tenant_header(tenant_id):
+            headers.update(extra)
+        try:
+            client = await self._client()
+            r = await client.post(url, json=body, headers=headers)
+        except httpx.HTTPError as e:
+            log.warning("control-plane capability declare failed: %s", e)
+            return None
+        if not r.is_success:
+            log.warning("control-plane capability declare -> %s", _describe_cp_error(r))
             return None
         return r.json()
 

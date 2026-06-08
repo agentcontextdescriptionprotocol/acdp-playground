@@ -1,0 +1,158 @@
+name: Build & push images (ghcr)
+
+# Builds the full-stack images and pushes them to GitHub Container Registry
+# (ghcr.io/<owner>/acdp-*) for deployment to Railway (see railway/DEPLOY.md).
+#
+# Heavy (Rust + Node + Python builds across four sibling repos), so it runs only
+# on a version tag or manual dispatch — never on every PR.
+#
+# Requires a repo secret SIBLING_REPO_TOKEN: a PAT (classic `repo`, or
+# fine-grained with Contents:read) that can clone the sibling repos
+# acdp-rs / acdp-registry-rs / acdp-control-plane / acdp-ui-console. The default
+# GITHUB_TOKEN only grants access to this repo, so sibling checkouts need it.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (in addition to `latest`)'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # ghcr requires a lowercase owner; github.repository_owner already is.
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  images:
+    name: build & push all images
+    runs-on: ubuntu-latest
+    steps:
+      # All Dockerfiles expect the sibling repos laid out side by side, so we
+      # check each one out under a shared `repos/` parent and build from there.
+      - name: Checkout playground
+        uses: actions/checkout@v5
+        with:
+          path: repos/acdp-playground
+
+      - name: Checkout acdp-rs
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.OWNER }}/acdp-rs
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          path: repos/acdp-rs
+
+      - name: Checkout acdp-registry-rs
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.OWNER }}/acdp-registry-rs
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          path: repos/acdp-registry-rs
+
+      - name: Checkout acdp-control-plane
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.OWNER }}/acdp-control-plane
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          path: repos/acdp-control-plane
+
+      - name: Checkout acdp-ui-console
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.OWNER }}/acdp-ui-console
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          path: repos/acdp-ui-console
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute extra tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── registry (Rust; context = the shared parent, needs acdp-rs) ──────
+      - name: Build & push registry
+        uses: docker/build-push-action@v6
+        with:
+          context: repos
+          file: repos/acdp-registry-rs/docker/Dockerfile
+          build-args: |
+            STORAGE_FEATURE=storage-sqlite
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-registry:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-registry:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=registry
+          cache-to: type=gha,scope=registry,mode=max
+
+      # ── control-plane (Node/Nest; self-contained context) ───────────────
+      - name: Build & push control-plane
+        uses: docker/build-push-action@v6
+        with:
+          context: repos/acdp-control-plane
+          file: repos/acdp-control-plane/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-control-plane:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-control-plane:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=control-plane
+          cache-to: type=gha,scope=control-plane,mode=max
+
+      # ── playground (Python; context = shared parent, needs acdp-rs) ──────
+      - name: Build & push playground
+        uses: docker/build-push-action@v6
+        with:
+          context: repos
+          file: repos/acdp-playground/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-playground:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-playground:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=playground
+          cache-to: type=gha,scope=playground,mode=max
+
+      # ── ui-console (Next.js standalone; self-contained context) ──────────
+      - name: Build & push ui-console
+        uses: docker/build-push-action@v6
+        with:
+          context: repos/acdp-ui-console
+          file: repos/acdp-ui-console/Dockerfile
+          build-args: |
+            NEXT_PUBLIC_ACDP_UI_DEMO_MODE=false
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-ui-console:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-ui-console:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=ui-console
+          cache-to: type=gha,scope=ui-console,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed images (\`${{ steps.meta.outputs.tag }}\` + \`latest\`)"
+            echo ""
+            for s in registry control-plane playground ui-console; do
+              echo "- \`${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-$s\`"
+            done
+            echo ""
+            echo "Deploy: see \`railway/DEPLOY.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -289,6 +289,16 @@ registry images are built from the sibling repo's Dockerfile.
 `docker-compose.full.yml` overlays the control plane (built from
 `../acdp-control-plane`).
 
+## Deploying to Railway
+
+`.github/workflows/deploy-images.yml` builds the full-stack images and pushes
+them to `ghcr.io/<owner>/acdp-{registry,control-plane,playground,ui-console}` on
+a `v*` tag or manual dispatch (needs a `SIBLING_REPO_TOKEN` secret to clone the
+sibling repos). The playground image binds Railway's dynamic `$PORT`/`$HOST`.
+**See [`railway/DEPLOY.md`](railway/DEPLOY.md)** for the full deploy — service
+topology, IPv6 private networking, per-service env vars, and the shared-secret
+wiring.
+
 ## Rebuilding the SDK
 
 The `acdp` Python package is a compiled (maturin/pyo3) extension. An

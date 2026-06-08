@@ -481,7 +481,7 @@ async def _check_jcs_numeric_vectors() -> int:
 
     from acdp import AcdpCanonicalizer
 
-    rfc_dir = Path(os.environ.get("ACDP_RFC_DIR", os.path.join(ROOT, "..", "agentcontextdescriptionprotocol")))
+    rfc_dir = Path(os.environ.get("ACDP_RFC_DIR", os.path.join(ROOT, "..", "agentcontextdistributionprotocol")))
     vectors_path = rfc_dir / "schemas" / "conformance" / "can-011-jcs-numeric-vectors.json"
     if not vectors_path.exists():
         print(f"  SKIP: vectors not found at {vectors_path}")

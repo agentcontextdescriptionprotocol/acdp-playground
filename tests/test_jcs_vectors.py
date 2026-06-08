@@ -4,7 +4,7 @@ Canonicalization now runs in the Rust SDK and is exercised here through the
 ``acdp.AcdpCanonicalizer`` binding (``acdp-py`` 0.2.0) — the playground no
 longer ships its own pure-Python JCS reference. The fixtures live in the
 sibling RFC repo; the test loads them from ``ACDP_RFC_DIR`` (default
-``../agentcontextdescriptionprotocol``) and skips cleanly when absent.
+``../agentcontextdistributionprotocol``) and skips cleanly when absent.
 
 The binding takes a JSON *string* (FFI convention) and re-canonicalizes its
 numbers, so a vector value is round-tripped through ``json.dumps`` first; the
@@ -23,7 +23,7 @@ import pytest
 
 from acdp import AcdpCanonicalizer
 
-_RFC_DIR = Path(os.environ.get("ACDP_RFC_DIR", "../agentcontextdescriptionprotocol"))
+_RFC_DIR = Path(os.environ.get("ACDP_RFC_DIR", "../agentcontextdistributionprotocol"))
 _VECTORS = _RFC_DIR / "schemas" / "conformance" / "can-011-jcs-numeric-vectors.json"
 
 

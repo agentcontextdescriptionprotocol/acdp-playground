@@ -12,8 +12,9 @@ dependencies = [
     "python-multipart>=0.0.9",
     "sse-starlette>=2.1",
     # 0.2.0 adds AcdpCanonicalizer + AcdpSsrfPolicy, which acdp_client now
-    # delegates JCS canonicalization and SSRF classification to.
-    "acdp>=0.2.0",
+    # delegates JCS canonicalization and SSRF classification to; 0.3.0 adds the
+    # did:web helpers (AcdpDid / AcdpDidDocument) the s19 scenario resolves with.
+    "acdp>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -48,3 +49,6 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "live: conformance checks against a running full stack (make up-full). Skipped unless ACDP_LIVE_STACK is set.",
+]

@@ -1,4 +1,4 @@
-.PHONY: dev build-sdk run test smoke docker up down up-full down-full fmt lint clean
+.PHONY: dev build-sdk run test test-live smoke smoke-live docker up down up-full down-full fmt lint clean
 
 PYTHON ?= python
 UV ?= uv
@@ -21,8 +21,16 @@ run:
 test:
 	$(UV) run pytest -q
 
+# Live conformance against a running full stack. Bring it up first
+# (`make up-full` in another shell, or `$(COMPOSE_FULL) up -d --wait`).
+test-live:
+	ACDP_LIVE_STACK=1 $(UV) run pytest -m live -q
+
 smoke:
 	$(UV) run python scripts/smoke_test.py
+
+smoke-live:
+	$(UV) run python scripts/smoke_test.py --live
 
 docker:
 	docker compose build

@@ -64,7 +64,7 @@ def reject_reserved_tenant(tenant: str | None) -> None:
     via ``X-Tenant-Id`` or a signed ``tenant`` claim would alias the entire
     untenanted bucket — a cross-boundary read/write. Both siblings now reject
     it server-side (registry ``reject_reserved_tenant``, acdp-registry-core
-    ``c988ea4`` → 422 ``schema_violation``; control-plane ``AuthGuard``, #50 →
+    ``c988ea4`` → 400 ``schema_violation``; control-plane ``AuthGuard``, #50 →
     403 ``not_authorized``). We mirror the rule client-side so a caller who
     sets ``tenant_id="default"`` fails fast locally with a clear message
     instead of a confusing server rejection. Untenanted access stays reachable

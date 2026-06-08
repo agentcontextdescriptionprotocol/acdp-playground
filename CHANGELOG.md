@@ -4,6 +4,40 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-08 — Conformance hardening: live-stack validation + CP #51 / did:web coverage
+
+Adds a live-stack conformance layer so the playground's asserted contracts are
+validated against the **real** registry/CP binaries, not just `httpx.MockTransport`
+— the gap that let the reserved-tenant `422 → 400` mock drift go green. Also
+fills the previously-unexercised CP #51 surfaces and adopts the acdp-py 0.3.0
+did:web helpers.
+
+### Live conformance
+
+- **`playground/conformance.py`** — shared probes asserting real contracts:
+  reserved-tenant 400, `application/acdp+json` error envelope, 1 MiB ingest 413,
+  `GET /events` server-side limit cap, revocation-feed shape, admin pinned-key
+  reload, and capability DTO `ecdsa-p256` acceptance (CP #51).
+- **`tests/live/`** — pytest suite behind the `live` marker, skipped unless
+  `ACDP_LIVE_STACK` is set; SSE de-dup behind `ACDP_LIVE_SSE` (Redis-only).
+  Validated against the real registry binary (reserved-tenant 400, 404 envelope,
+  1 MiB 413).
+- **`smoke_test.py --live`**, `make test-live` / `make smoke-live`, and a manual
+  `workflow_dispatch` CI job that boots registry + CP and runs the suite.
+
+### Scenarios + bridge
+
+- **S21 — P-256 capability declaration** (offline): emits the `ecdsa-p256`
+  capability declaration CP #51's DTO now accepts and self-verifies the signature.
+- **`ControlPlaneClient.events` / `.declare_capability`** bridge methods
+  (`GET /events`, `POST /capabilities`), with offline unit coverage.
+
+### Client / SDK
+
+- **did:web helpers re-exported** from `acdp_client` (`AcdpDid`,
+  `AcdpDidDocument`, `DidResolutionError`, acdp-py 0.3.0). S19 now resolves its
+  emitted `did.json` through the same Rust consumer gate the CP uses.
+
 ## 2026-06-07 — Playground sibling sync, round 5 (delegate JCS + SSRF to the SDK)
 
 Consumes `acdp-rs` PR #32, which exposed the JCS canonicalizer and the SSRF
@@ -70,7 +104,7 @@ do. No SDK rebuild required.
 - **S20 — reserved-tenant rejection.** Fully offline: the standalone guard
   blocks `default` and passes `None` / real tenants through; the client
   constructor and CP bridge both refuse `default`. The live wire contract
-  (registry 422 `schema_violation` / CP 403 `not_authorized`) is asserted
+  (registry 400 `schema_violation` / CP 403 `not_authorized`) is asserted
   against a mock transport in `tests/test_reserved_tenant.py`.
 - **smoke_test.py** grows a reserved-tenant client-guard check (14 total).
 

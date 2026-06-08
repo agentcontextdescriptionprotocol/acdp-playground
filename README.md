@@ -19,7 +19,7 @@ playground/
   events.py                   # in-process SSE bus
   control_plane.py            # no-op when CONTROL_PLANE_URL unset
 scripts/
-  smoke_test.py               # 11-check offline wiring (P-256, JCS vectors, SSRF guard, CP stub)
+  smoke_test.py               # offline wiring checks (P-256, JCS vectors, SSRF guard, CP stub); --live adds real-stack conformance
   gen_keys.py                 # deterministic agent identity material (ed25519 / p256)
   pinned_keys_diff.py         # translate registry [playground]pinned_keys → CONTROL_PLANE_PINNED_KEYS env
 config/                       # registry-a.toml, registry-b.toml
@@ -102,9 +102,15 @@ curl -N localhost:8000/runs/RUN_ID/events
 > **Round-4 scenario (S20)** tracks `acdp-control-plane` #50. **S20** runs
 > **fully offline** and proves the reserved `default` tenant can never be
 > *asserted* (via `X-Tenant-Id` or a token claim) — it would alias the
-> untenanted bucket. The registry returns 422 `schema_violation` and the CP
+> untenanted bucket. The registry returns 400 `schema_violation` and the CP
 > 403 `not_authorized`; the playground mirrors the rule client-side so a
 > caller fails fast locally.
+>
+> **S21** tracks `acdp-control-plane` #51. **S21** runs **fully offline** and
+> proves the playground's P-256 agent emits the `ecdsa-p256` capability
+> declaration the control plane's capability DTO now accepts (it previously
+> rejected P-256 at the validation boundary); the signature is self-verified
+> against the producer's key.
 
 ## V2 protocol features
 
@@ -243,6 +249,28 @@ scenarios (S10–S14) have a real IdP to talk to there.
 > validated by the unit suite (mocked registry/CP); the deterministic
 > cores (P-256 crypto, cursor logic, tenant-header policy, rotation
 > windows, Retry-After) are fully exercised offline.
+
+### Live conformance suite
+
+The unit suite and `smoke_test` assert against `httpx.MockTransport` — fast and
+offline, but a mock can drift from the real binary (the reserved-tenant
+`422 → 400` fix is the cautionary tale). The **live suite** re-checks the
+externally-observable contracts against a running `make up-full` stack:
+
+```bash
+make up-full                     # in another shell (or: docker compose ... up -d --wait)
+make test-live                   # ACDP_LIVE_STACK=1 pytest -m live
+make smoke-live                  # scripts/smoke_test.py --live
+```
+
+The probes live in `playground/conformance.py` (shared by both entry points) and
+cover the reserved-tenant 400, the `application/acdp+json` error envelope, the
+1 MiB ingest 413, the `GET /events` server-side limit cap, the revocation-feed
+shape, the admin pinned-key reload, and that the capability DTO accepts
+`ecdsa-p256` (CP #51). They are **skipped unless `ACDP_LIVE_STACK` is set**, so a
+plain `pytest` stays offline. The SSE de-duplication check additionally needs
+`ACDP_LIVE_SSE=1` (the bug only reproduces on a Redis StreamHub; the demo stack
+is memory-backed). CI runs this suite on manual `workflow_dispatch` only.
 
 ### TokenManager refresh-reason telemetry
 

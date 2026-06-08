@@ -13,9 +13,12 @@ deterministic: it mints a P-256 agent, emits the did:web verification method
 the SDK produces (``AcdpP256Producer.did_verification_method``), and asserts it
 is exactly the JWK-only ``JsonWebKey2020`` shape (``kty=EC`` / ``crv=P-256``)
 the fixed CP resolver accepts — i.e. the playground publishes a DID document
-the control plane can now consume. It also assembles the ``did.json`` the CP
-would fetch from ``/.well-known/``. No network is required; when the full
-stack is up the same document is what the CP would resolve.
+the control plane can now consume. It assembles the ``did.json`` the CP would
+fetch from ``/.well-known/`` and then **resolves it through the same Rust
+did:web consumer gate the CP uses** (``acdp.AcdpDidDocument``, acdp-py 0.3.0),
+asserting the recovered key is the producer's signing key — so the scenario
+proves the document is resolvable, not merely well-shaped. No network is
+required; when the full stack is up the same document is what the CP resolves.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from acdp_client import AcdpDidDocument, DidResolutionError
 from acdp_client.models import StepEvent
 from acdp_client.signing import producer_algorithm
 from playground.config import get_settings
@@ -102,6 +106,22 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
             "authentication": [key_id],
         }
 
+        # Prove the emitted document is not merely *shaped* right but actually
+        # *resolvable*: run it through the same Rust did:web consumer gate the CP
+        # uses (acdp-py 0.3.0 — assertionMethod authorization + algorithm-downgrade
+        # defense) and assert the recovered key is the producer's signing key.
+        resolvable = False
+        resolve_detail = ""
+        try:
+            doc = AcdpDidDocument.parse(json.dumps(did_document), did)
+            resolved = doc.key_for_algorithm(key_id, "ecdsa-p256")
+            resolvable = resolved["public_key_b64"] == producer.public_key_sec1_b64
+            resolve_detail = "key matches producer" if resolvable else "key mismatch"
+        except DidResolutionError as e:
+            resolve_detail = f"rejected: {getattr(e, 'reason', '?')}"
+
+        conformant = conformant and resolvable
+
         await note(
             "P-256 verification method",
             f"type={vm.get('type')} jwk_only={jwk_only} crv={jwk.get('crv')}",
@@ -113,7 +133,7 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
                 ts=datetime.now(timezone.utc).isoformat(),
                 agent_id=did,
                 title="did:web document is CP-resolvable (P-256, JWK-only)",
-                preview=f"conformant={conformant}",
+                preview=f"conformant={conformant} resolve={resolve_detail}",
             )
         )
 
@@ -128,6 +148,7 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
                 "jwk_only": jwk_only,
                 "jwk_curve": jwk.get("crv"),
                 "cp_resolvable": conformant,
+                "did_resolves": resolvable,
                 "verification_method": vm,
                 "did_document": did_document,
             },

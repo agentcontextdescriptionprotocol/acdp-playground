@@ -6,7 +6,7 @@ claim — the request would alias the entire untenanted bucket, a
 cross-boundary read/write. Both siblings now refuse it:
 
 * registry — ``reject_reserved_tenant`` (acdp-registry-core ``c988ea4`` /
-  ``#24``), surfaced as a 422 ``schema_violation`` on publish/retrieve.
+  ``#24``), surfaced as a 400 ``schema_violation`` on publish/retrieve.
 * control plane — ``AuthGuard.assertNotReservedTenant`` (acdp-control-plane
   ``#50``), a 403 ``not_authorized`` on any tenant-scoped route.
 
@@ -18,7 +18,7 @@ The playground mirrors the rule client-side (``acdp_client.identifiers
 the control-plane bridge) so a caller fails fast locally with a clear
 message instead of a confusing server rejection. This scenario exercises
 that guard **fully offline** — no registry, network, or LLM required. The
-hard server-contract assertion (422 / 403 against a mock transport) lives
+hard server-contract assertion (400 / 403 against a mock transport) lives
 in ``tests/test_reserved_tenant.py``.
 """
 
@@ -42,7 +42,7 @@ SCENARIO = ScenarioDef(
     name="Reserved-tenant rejection",
     description="Asserting the reserved 'default' tenant (via X-Tenant-Id or a "
                 "token claim) is refused — it would alias the untenanted bucket. "
-                "Registry 422 schema_violation / CP 403 not_authorized; mirrored "
+                "Registry 400 schema_violation / CP 403 not_authorized; mirrored "
                 "client-side. Runs fully offline.",
     registry_mode="single",
     agent_count=0,
@@ -124,10 +124,10 @@ async def run(spec: RunSpec, events: asyncio.Queue[StepEvent]) -> RunResult:
         contexts=[],
         summary={
             "reserved_tenant_guard": outcomes,
-            # The live wire contract (registry 422 schema_violation / CP 403
+            # The live wire contract (registry 400 schema_violation / CP 403
             # not_authorized) is asserted against a mock transport in
             # tests/test_reserved_tenant.py.
-            "server_contract": "registry 422 schema_violation / CP 403 not_authorized",
+            "server_contract": "registry 400 schema_violation / CP 403 not_authorized",
         },
         error=None if ok else "S20 reserved-tenant guard assertions failed",
     )

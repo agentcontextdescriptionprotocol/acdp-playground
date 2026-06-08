@@ -1,7 +1,7 @@
 """Reserved-tenant (`default`) rejection — client guard + server contract.
 
 The reserved sentinel may never be *asserted* as a tenant. Both siblings
-reject it server-side (registry ``c988ea4`` → 422 ``schema_violation``;
+reject it server-side (registry ``c988ea4`` → 400 ``schema_violation``;
 control plane ``#50`` → 403 ``not_authorized``); the playground mirrors the
 rule client-side so a caller fails fast locally. These tests cover the
 standalone guard, the :class:`AcdpClient` / control-plane-bridge wiring, the
@@ -106,12 +106,12 @@ def _client(handler) -> AcdpClient:
     return AcdpClient("http://reg.test", http=http)
 
 
-async def test_registry_reserved_tenant_surfaces_422_schema_violation():
-    """A registry rejects an asserted `default` tenant as 422 schema_violation."""
+async def test_registry_reserved_tenant_surfaces_400_schema_violation():
+    """A registry rejects an asserted `default` tenant as 400 schema_violation."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            422,
+            400,
             headers={"Content-Type": "application/acdp+json"},
             json={
                 "error": {
@@ -126,7 +126,7 @@ async def test_registry_reserved_tenant_surfaces_422_schema_violation():
     try:
         with pytest.raises(AcdpHTTPError) as ei:
             await client.retrieve_raw("ctx-1")
-        assert ei.value.status == 422
+        assert ei.value.status == 400
         assert ei.value.code == "schema_violation"
     finally:
         await client.aclose()

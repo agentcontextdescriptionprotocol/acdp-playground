@@ -659,7 +659,7 @@ async def _check_typed_wire_errors() -> int:
 
 
 async def _check_reserved_tenant_guard() -> int:
-    """The reserved `default` tenant can never be *asserted* (registry 422
+    """The reserved `default` tenant can never be *asserted* (registry 400
     schema_violation / CP 403 not_authorized, mirrored client-side; CP #50)."""
     print("\n[14/14] reserved-tenant guard (default sentinel)")
     from acdp_client import AcdpClient, RESERVED_TENANT, reject_reserved_tenant

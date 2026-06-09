@@ -90,11 +90,12 @@ jobs:
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── registry (Rust; context = the shared parent, needs acdp-rs) ──────
+      # ── registry (Rust; self-contained context — `acdp` is from crates.io,
+      #    and the Dockerfile does `COPY . .` expecting its own repo root) ───
       - name: Build & push registry
         uses: docker/build-push-action@v6
         with:
-          context: repos
+          context: repos/acdp-registry-rs
           file: repos/acdp-registry-rs/docker/Dockerfile
           build-args: |
             STORAGE_FEATURE=storage-sqlite

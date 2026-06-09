@@ -1,16 +1,21 @@
-name: Build & push images (ghcr)
+name: Build & push playground image (ghcr)
 
-# Builds the full-stack images and pushes them to GitHub Container Registry
-# (ghcr.io/<owner>/acdp-*) for deployment to Railway (see railway/DEPLOY.md).
+# Builds the playground image and pushes it to GitHub Container Registry
+# (ghcr.io/<owner>/acdp-playground) for deployment to Railway (see
+# railway/DEPLOY.md).
 #
-# Heavy (Rust + Node + Python builds across four sibling repos), so it runs only
-# on a version tag or manual dispatch — never on every PR.
+# Scope: this repo publishes ONLY its own image. Each other stack image is
+# published by its own repo on that repo's version tags (each repo owns its
+# ghcr package):
+#   acdp-registry      <- acdp-registry-rs    (.github/workflows/docker.yml)
+#   acdp-control-plane <- acdp-control-plane   (.github/workflows/release.yml)
+#   acdp-ui-console    <- acdp-ui-console
 #
-# The sibling repos acdp-rs / acdp-registry-rs / acdp-control-plane /
-# acdp-ui-console are public, so the built-in GITHUB_TOKEN can clone them and no
-# extra secret is required. If they are ever made private, set a repo secret
-# SIBLING_REPO_TOKEN (a PAT — classic `repo`, or fine-grained Contents:read);
-# the sibling checkouts below prefer it when present and fall back to GITHUB_TOKEN.
+# The playground image embeds the acdp-py SDK through a path dependency, so the
+# build needs the sibling acdp-rs checkout beside it (hence the shared `repos/`
+# build context). acdp-rs is public, so the built-in GITHUB_TOKEN can clone it
+# and no extra secret is required; a SIBLING_REPO_TOKEN PAT is still honoured if
+# the repo is ever made private.
 
 on:
   push:
@@ -32,12 +37,13 @@ env:
   OWNER: ${{ github.repository_owner }}
 
 jobs:
-  images:
-    name: build & push all images
+  image:
+    name: build & push playground image
     runs-on: ubuntu-latest
     steps:
-      # All Dockerfiles expect the sibling repos laid out side by side, so we
-      # check each one out under a shared `repos/` parent and build from there.
+      # The playground Dockerfile resolves a path dependency on ../acdp-rs, so
+      # both repos are checked out side by side under a shared `repos/` parent
+      # and the image is built from there.
       - name: Checkout playground
         uses: actions/checkout@v5
         with:
@@ -49,27 +55,6 @@ jobs:
           repository: ${{ env.OWNER }}/acdp-rs
           token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
           path: repos/acdp-rs
-
-      - name: Checkout acdp-registry-rs
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ env.OWNER }}/acdp-registry-rs
-          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
-          path: repos/acdp-registry-rs
-
-      - name: Checkout acdp-control-plane
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ env.OWNER }}/acdp-control-plane
-          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
-          path: repos/acdp-control-plane
-
-      - name: Checkout acdp-ui-console
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ env.OWNER }}/acdp-ui-console
-          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
-          path: repos/acdp-ui-console
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -90,35 +75,6 @@ jobs:
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── registry (Rust; self-contained context — `acdp` is from crates.io,
-      #    and the Dockerfile does `COPY . .` expecting its own repo root) ───
-      - name: Build & push registry
-        uses: docker/build-push-action@v6
-        with:
-          context: repos/acdp-registry-rs
-          file: repos/acdp-registry-rs/docker/Dockerfile
-          build-args: |
-            STORAGE_FEATURE=storage-sqlite
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-registry:latest
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-registry:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=registry
-          cache-to: type=gha,scope=registry,mode=max
-
-      # ── control-plane (Node/Nest; self-contained context) ───────────────
-      - name: Build & push control-plane
-        uses: docker/build-push-action@v6
-        with:
-          context: repos/acdp-control-plane
-          file: repos/acdp-control-plane/Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-control-plane:latest
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-control-plane:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=control-plane
-          cache-to: type=gha,scope=control-plane,mode=max
-
       # ── playground (Python; context = shared parent, needs acdp-rs) ──────
       - name: Build & push playground
         uses: docker/build-push-action@v6
@@ -132,29 +88,12 @@ jobs:
           cache-from: type=gha,scope=playground
           cache-to: type=gha,scope=playground,mode=max
 
-      # ── ui-console (Next.js standalone; self-contained context) ──────────
-      - name: Build & push ui-console
-        uses: docker/build-push-action@v6
-        with:
-          context: repos/acdp-ui-console
-          file: repos/acdp-ui-console/Dockerfile
-          build-args: |
-            NEXT_PUBLIC_ACDP_UI_DEMO_MODE=false
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-ui-console:latest
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-ui-console:${{ steps.meta.outputs.tag }}
-          cache-from: type=gha,scope=ui-console
-          cache-to: type=gha,scope=ui-console,mode=max
-
       - name: Summary
         run: |
           {
-            echo "### Pushed images (\`${{ steps.meta.outputs.tag }}\` + \`latest\`)"
+            echo "### Pushed image (\`${{ steps.meta.outputs.tag }}\` + \`latest\`)"
             echo ""
-            for s in registry control-plane playground ui-console; do
-              echo "- \`${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-$s\`"
-            done
+            echo "- \`${{ env.REGISTRY }}/${{ env.OWNER }}/acdp-playground\`"
             echo ""
-            echo "Deploy: see \`railway/DEPLOY.md\`."
+            echo "Other stack images are published by their own repos — see \`railway/DEPLOY.md\`."
           } >> "$GITHUB_STEP_SUMMARY"

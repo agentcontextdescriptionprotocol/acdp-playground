@@ -30,4 +30,10 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-CMD ["uv", "run", "uvicorn", "playground.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Bind PORT/HOST from the environment so the same image runs locally (defaults
+# 0.0.0.0:8000) and on a PaaS like Railway, which injects a dynamic $PORT and
+# requires binding IPv6 `::` for private-network service-to-service traffic.
+# `sh -c` expands the vars; `--no-sync` skips a slow re-resolve/maturin rebuild
+# on every cold start (the env is already built above); `exec` hands signals to
+# the server for graceful shutdown. Set HOST=:: on Railway.
+CMD ["sh", "-c", "exec uv run --no-sync uvicorn playground.main:app --host \"${HOST:-0.0.0.0}\" --port \"${PORT:-8000}\""]

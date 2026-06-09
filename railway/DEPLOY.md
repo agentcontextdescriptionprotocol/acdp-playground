@@ -2,8 +2,8 @@
 
 This deploys the whole demo — **2 registries + control plane + playground +
 ui-console** — to [Railway](https://railway.com), pulling images from GitHub
-Container Registry (ghcr.io). Images are built by
-`.github/workflows/deploy-images.yml`; Railway runs them.
+Container Registry (ghcr.io). Each repo publishes its **own** image on a `v*`
+tag (this repo builds `acdp-playground`); Railway runs them.
 
 ```
                          ┌─────────────────────────────┐
@@ -37,30 +37,28 @@ everything else talks over Railway's private network.
 
 ## 1. Build & push the images
 
-Add a repo secret **`SIBLING_REPO_TOKEN`** — a PAT (classic `repo`, or
-fine-grained with *Contents: read*) that can clone the sibling repos
-`acdp-rs`, `acdp-registry-rs`, `acdp-control-plane`, `acdp-ui-console`. The
-default `GITHUB_TOKEN` can't read other repos.
+Each repo owns and publishes its own ghcr package on a `v*` tag — there is no
+central "build everything" job, and no cross-repo PAT is needed (every build
+clones only public siblings via the built-in `GITHUB_TOKEN`):
 
-Then publish (pick one):
+| Image                              | Built by repo        | Workflow                              |
+|------------------------------------|----------------------|---------------------------------------|
+| `ghcr.io/<owner>/acdp-playground`  | **acdp-playground**  | `.github/workflows/deploy-images.yml` |
+| `ghcr.io/<owner>/acdp-registry`    | **acdp-registry-rs** | `.github/workflows/docker.yml`        |
+| `ghcr.io/<owner>/acdp-control-plane` | **acdp-control-plane** | `.github/workflows/release.yml`     |
+| `ghcr.io/<owner>/acdp-ui-console`  | **acdp-ui-console**  | (its own release workflow)            |
+
+Publish this repo's image (pick one):
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0      # tag-triggered
-# or: Actions → "Build & push images (ghcr)" → Run workflow (manual)
+# or: Actions → "Build & push playground image (ghcr)" → Run workflow (manual)
 ```
 
-This pushes four packages under your org:
-
-```
-ghcr.io/<owner>/acdp-registry:latest
-ghcr.io/<owner>/acdp-control-plane:latest
-ghcr.io/<owner>/acdp-playground:latest
-ghcr.io/<owner>/acdp-ui-console:latest
-```
-
-Make each package **public** (or grant Railway access): GitHub → the org's
-*Packages* → each package → *Package settings* → visibility / add Railway's
-deploy token. Public is simplest for a demo.
+Tag the sibling repos the same way to publish the rest. Then make each package
+**public** (or grant Railway access): GitHub → the org's *Packages* → each
+package → *Package settings* → visibility / add Railway's deploy token. Public
+is simplest for a demo.
 
 ---
 

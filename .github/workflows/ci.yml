@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The live-conformance job builds + boots the real registry/CP and is
+  # heavy, so it runs only on manual dispatch — not on every PR.
+  workflow_dispatch:
 
 defaults:
   run:
@@ -58,7 +61,68 @@ jobs:
           # the unit suite (smoke check uses an in-process stub).
           LLM_PROVIDER: mock
 
-      - name: Run smoke test (8/8 checks incl. P-256, JCS, in-process CP stub)
+      - name: Run smoke test (offline checks incl. P-256, JCS, in-process CP stub)
         run: uv run python scripts/smoke_test.py
         env:
           LLM_PROVIDER: mock
+
+  live:
+    name: live conformance (real registry + control plane)
+    # Manual only (workflow_dispatch): builds the Rust registry + Node CP
+    # images and asserts the playground's contracts against the real binaries.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout playground
+        uses: actions/checkout@v5
+        with:
+          path: acdp-playground
+
+      - name: Checkout sibling SDK (acdp-rs)
+        uses: actions/checkout@v5
+        with:
+          repository: agentcontextdistributionprotocol/acdp-rs
+          path: acdp-rs
+
+      - name: Checkout sibling registry (acdp-registry-rs)
+        uses: actions/checkout@v5
+        with:
+          repository: agentcontextdistributionprotocol/acdp-registry-rs
+          path: acdp-registry-rs
+
+      - name: Checkout sibling control plane (acdp-control-plane)
+        uses: actions/checkout@v5
+        with:
+          repository: agentcontextdistributionprotocol/acdp-control-plane
+          path: acdp-control-plane
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: 'latest'
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+        env:
+          UV_LINK_MODE: copy
+
+      - name: Boot the registry + control plane
+        # Only the services the probes hit (registry-a on 8100, control-plane
+        # on 3001) — skip the playground app and the ui-console build. --wait
+        # blocks until their healthchecks pass.
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.full.yml \
+            up -d --wait --build registry-a control-plane
+
+      - name: Run live conformance suite
+        run: |
+          ACDP_LIVE_STACK=1 uv run pytest -m live --tb=short
+          uv run python scripts/smoke_test.py --live
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.full.yml down -v

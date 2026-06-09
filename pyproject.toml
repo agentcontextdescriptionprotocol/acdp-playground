@@ -49,3 +49,6 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "live: conformance checks against a running full stack (make up-full). Skipped unless ACDP_LIVE_STACK is set.",
+]

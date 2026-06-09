@@ -6,6 +6,12 @@ owns all crypto. This package adds the async HTTP transport
 registry returns.
 """
 
+# did:web helpers live in the Rust SDK (acdp-py 0.3.0). Re-export them here so
+# playground code resolves a producer's DID document through one import surface
+# — the same consumer gate (assertionMethod authorization + algorithm-downgrade
+# defense, RFC-ACDP-0008 §3.9) the registry and control plane use server-side.
+from acdp import AcdpDid, AcdpDidDocument, DidResolutionError
+
 from acdp_client.client import (
     AcdpClient,
     AcdpHTTPError,
@@ -65,12 +71,15 @@ __all__ = [
     "ERROR_CODES",
     "SIGNATURE_ERROR_CODES",
     "AcdpClient",
+    "AcdpDid",
+    "AcdpDidDocument",
     "AcdpHTTPError",
     "Body",
     "CachedToken",
     "ChallengeError",
     "CursorError",
     "DataRefHashMismatch",
+    "DidResolutionError",
     "FullContext",
     "NotAuthorizedError",
     "PayloadTooLargeError",

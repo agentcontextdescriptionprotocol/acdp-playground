@@ -6,10 +6,11 @@ name: Build & push images (ghcr)
 # Heavy (Rust + Node + Python builds across four sibling repos), so it runs only
 # on a version tag or manual dispatch — never on every PR.
 #
-# Requires a repo secret SIBLING_REPO_TOKEN: a PAT (classic `repo`, or
-# fine-grained with Contents:read) that can clone the sibling repos
-# acdp-rs / acdp-registry-rs / acdp-control-plane / acdp-ui-console. The default
-# GITHUB_TOKEN only grants access to this repo, so sibling checkouts need it.
+# The sibling repos acdp-rs / acdp-registry-rs / acdp-control-plane /
+# acdp-ui-console are public, so the built-in GITHUB_TOKEN can clone them and no
+# extra secret is required. If they are ever made private, set a repo secret
+# SIBLING_REPO_TOKEN (a PAT — classic `repo`, or fine-grained Contents:read);
+# the sibling checkouts below prefer it when present and fall back to GITHUB_TOKEN.
 
 on:
   push:
@@ -46,28 +47,28 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ${{ env.OWNER }}/acdp-rs
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
           path: repos/acdp-rs
 
       - name: Checkout acdp-registry-rs
         uses: actions/checkout@v5
         with:
           repository: ${{ env.OWNER }}/acdp-registry-rs
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
           path: repos/acdp-registry-rs
 
       - name: Checkout acdp-control-plane
         uses: actions/checkout@v5
         with:
           repository: ${{ env.OWNER }}/acdp-control-plane
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
           path: repos/acdp-control-plane
 
       - name: Checkout acdp-ui-console
         uses: actions/checkout@v5
         with:
           repository: ${{ env.OWNER }}/acdp-ui-console
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+          token: ${{ secrets.SIBLING_REPO_TOKEN || github.token }}
           path: repos/acdp-ui-console
 
       - name: Set up Docker Buildx

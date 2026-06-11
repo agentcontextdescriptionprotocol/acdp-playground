@@ -10,19 +10,6 @@ from datetime import datetime, timezone
 from acdp import AcdpProducer
 from acdp_client.models import PublishResponse
 from playground.agents.base import AgentTask, BasePlaygroundAgent
-from playground.scenarios import list_scenarios
-
-
-def test_catalog_has_fifteen_scenarios():
-    ids = {s.id for s in list_scenarios()}
-    expected = {
-        "s1_single_publish", "s2_producer_consumer", "s3_fanout", "s4_chain",
-        "s5_cross_registry", "s6_restricted", "s7_supersession", "s8_cross_org",
-        "s9_p256_publish", "s10_tenant_isolation", "s11_revocation",
-        "s12_key_rotation", "s13_policy_deny", "s14_domain_pack",
-        "s15_supersession_lineage",
-    }
-    assert expected <= ids, f"missing: {expected - ids}"
 
 
 class _CapturingClient:

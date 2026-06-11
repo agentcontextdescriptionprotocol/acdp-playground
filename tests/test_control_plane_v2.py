@@ -207,3 +207,61 @@ async def test_disabled_when_url_unset():
     # No-ops without raising.
     await cp.notify_run_started("r", "s", {})
     assert await cp.introspect("t") is None
+
+
+# ── domain packs (public — no admin token) ──────────────────────────────
+
+
+async def test_domain_packs_lists_active_packs():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"packs": [{"id": "finance"}]})
+
+    cp = _cp(handler)
+    out = await cp.domain_packs()
+    assert out == {"packs": [{"id": "finance"}]}
+    assert captured["path"] == "/domain-packs"
+    assert captured["auth"] is None  # public endpoint, no admin header
+    await cp.aclose()
+
+
+async def test_domain_packs_none_when_disabled():
+    cp = ControlPlaneClient(Settings(control_plane_url=""))
+    assert await cp.domain_packs() is None
+
+
+# ── graceful degradation: non-2xx and transport errors return None ───────
+
+
+async def test_admin_calls_return_none_on_non_2xx():
+    """An admin call against an erroring CP degrades to None, never raises —
+    the bridge is best-effort and must not break a run."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            headers={"content-type": "application/json"},
+            json={"error": {"code": "internal", "message": "boom"}},
+        )
+
+    cp = _cp(handler)
+    assert await cp.introspect("t") is None
+    assert await cp.revocations() is None
+    assert await cp.events() is None
+    assert await cp.domain_packs() is None
+    assert await cp.reload_pinned_keys() is None
+    await cp.aclose()
+
+
+async def test_admin_calls_return_none_on_transport_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    cp = _cp(handler)
+    assert await cp.introspect("t") is None
+    assert await cp.revocations() is None
+    assert await cp.domain_packs() is None
+    await cp.aclose()

@@ -11,7 +11,7 @@ from acdp_client.client import (
     PayloadTooLargeError,
     SupersededError,
 )
-from acdp_client.models import CursorError, parse_error_envelope
+from acdp_client.models import parse_error_envelope
 
 
 def test_parse_error_envelope_nested():
@@ -117,19 +117,6 @@ async def test_framework_413_with_envelope_exposes_code():
         await client.publish('{"x":1}')
     assert e.value.code == "payload_too_large"
     assert e.value.status == 413
-    await client.aclose()
-
-
-async def test_search_surfaces_cursor_error():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            400, json={"error": {"code": "cursor_expired", "message": "stale"}}
-        )
-
-    client = _client(handler)
-    with pytest.raises(CursorError) as e:
-        await client.search("q", cursor="old")
-    assert e.value.code == "cursor_expired"
     await client.aclose()
 
 

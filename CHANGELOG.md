@@ -4,6 +4,31 @@ Notable changes to the ACDP stack as observed from the playground.
 Tracks cross-repo work — playground, control plane, registry, SDK —
 so operators reading any one repo can see the system-wide picture.
 
+## 2026-06-10 — Documentation set for the playground (`docs/`)
+
+Adds a structured `docs/` tree that the website sync publishes as the
+**/playground** section of [agentcontextdistributionprotocol.io](https://agentcontextdistributionprotocol.io)
+(via `notify-website.yml`). The docs cover **only what is unique to the
+playground** — the scenario catalog, the run lifecycle, the SSE API, the agent
+abstractions, and the thin `acdp_client` wrapper — and **reference** the sibling
+projects (`acdp-rs`, `acdp-registry-rs`, `acdp-control-plane`, the spec/RFCs) for
+everything they canonically own, rather than re-documenting it.
+
+### Docs
+
+- **`docs/README.md`** — index, scope note, and a *Related projects* map linking
+  each topic (signing, error envelope, SSRF policy, token flow, tenancy, config)
+  to the repo that owns it.
+- **`docs/architecture.md`**, **`getting-started.md`**, **`scenarios.md`**,
+  **`http-api.md`**, **`client-sdk.md`**, **`agents.md`**, **`configuration.md`**,
+  **`deployment.md`**, **`testing-and-conformance.md`** — one page per surface,
+  cross-linked, with sibling/spec references in place of duplicated detail.
+
+### README
+
+- Added a **Documentation** section pointing at `docs/` and the published site,
+  and a **Related projects** table so readers land on the right repo.
+
 ## 2026-06-08 — Conformance hardening: live-stack validation + CP #51 / did:web coverage
 
 Adds a live-stack conformance layer so the playground's asserted contracts are

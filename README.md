@@ -6,6 +6,33 @@ control plane can be exercised end-to-end. It spins agents, calls real
 LLMs, publishes context, streams events over SSE, and forwards
 registry webhooks.
 
+## Documentation
+
+Full docs live in [`docs/`](docs/) and are published as the **/playground**
+section of [agentcontextdistributionprotocol.io](https://agentcontextdistributionprotocol.io):
+
+| Doc | Covers |
+|-----|--------|
+| [Getting started](docs/getting-started.md) | Install, smoke-test, run the stack, first run |
+| [Architecture](docs/architecture.md) | Components, request flow, the run lifecycle, the SSE bus |
+| [Scenarios](docs/scenarios.md) | The S1–S21 catalog and how to author one |
+| [HTTP API](docs/http-api.md) | Every route on the playground service |
+| [Client library](docs/client-sdk.md) | `acdp_client` — the async wrapper the playground drives the SDK through |
+| [Agents](docs/agents.md) | `BasePlaygroundAgent` + LangChain / CrewAI / LangGraph |
+| [Configuration](docs/configuration.md) | The playground's own environment variables |
+| [Deployment](docs/deployment.md) | Docker Compose, the full stack, Railway |
+| [Testing & conformance](docs/testing-and-conformance.md) | Unit suite, smoke test, live probes |
+
+These docs cover **only what is unique to the playground**. Anything owned by
+another project is referenced, not re-explained:
+
+| Project | What it owns |
+|---------|--------------|
+| [Spec / RFCs](https://github.com/agentcontextdistributionprotocol/agentcontextdistributionprotocol/tree/main/rfcs) | The protocol: context body, publish, retrieval, discovery, cross-registry, capabilities, security |
+| [`acdp-rs`](https://github.com/agentcontextdistributionprotocol/acdp-rs/tree/main/docs) | The SDK — signing, JCS canonicalization, the SSRF policy, error taxonomy, the Python/Node bindings |
+| [`acdp-registry-rs`](https://github.com/agentcontextdistributionprotocol/acdp-registry-rs/tree/main/docs) | Registry HTTP API, authentication, multi-tenancy, webhooks, configuration |
+| [`acdp-control-plane`](https://github.com/agentcontextdistributionprotocol/acdp-control-plane/tree/main/docs) | Token issuance, introspection, revocation, policy, ingest, federation |
+
 ## Layout
 
 ```

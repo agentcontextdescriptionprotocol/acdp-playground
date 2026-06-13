@@ -1,4 +1,7 @@
-"""Offline assertions for the auth-dependent scenarios (S9–S14, S18, S21).
+"""Offline assertions for the auth-dependent and 0.2 trust scenarios.
+
+Covers S9–S14, S18, S21 (auth-dependent) and the ACDP 0.2 trust & hardening
+set S22–S26 (receipts, did:key, historical keys, divergence diagnostics).
 
 These scenarios can't complete token issuance against a stock registry (the
 playground's ``*.playground.local`` DIDs aren't web-hosted and keys rotate per
@@ -29,6 +32,7 @@ def offline_stack(monkeypatch):
     scenarios take their deterministic + degrade-gracefully paths."""
     monkeypatch.setenv("REGISTRY_A_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("REGISTRY_B_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("REGISTRY_C_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("CONTROL_PLANE_URL", "")
     monkeypatch.setenv("LLM_PROVIDER", "mock")  # no langchain_openai in CI
     get_settings.cache_clear()
@@ -76,6 +80,67 @@ async def test_s21_capabilities_p256_core(offline_stack):
     assert s["signature_verified"] is True
     assert s["cp_acceptable"] is True
     assert s["signing_input"].startswith("acdp-cap:v1:")
+
+
+# ── ACDP 0.2 trust & hardening deterministic cores ───────────────────────
+
+
+async def test_s22_receipts_offline_core(offline_stack):
+    # No registry -> the receipt half degrades, but the did:key publish
+    # request self-verifies offline (content_hash + embedded-key signature).
+    res = await _run("s22_receipts")
+    assert res.status == "complete"
+    s = res.summary
+    assert s["producer_did_method"] == "did:key"
+    assert s["offline_publish_verified"] is True
+    assert s.get("degraded") is True  # receipt verification needs a live registry
+
+
+async def test_s23_receipt_tamper_fails_closed(offline_stack):
+    # Fully deterministic: every dishonest receipt must be rejected.
+    res = await _run("s23_receipt_tamper")
+    assert res.status == "complete"
+    s = res.summary
+    assert s["all_failed_closed"] is True
+    # Each adversarial class fired (missing, created_at, fingerprint, ctx_id,
+    # content_hash, signature).
+    assert all(c["rejected"] for c in s["checks"].values())
+    assert len(s["checks"]) == 6
+
+
+async def test_s24_historical_key_core(offline_stack):
+    res = await _run("s24_historical_key")
+    assert res.status == "complete"
+    s = res.summary
+    assert s["offline_core_ok"] is True
+    assert s["rotation_distinct"] is True
+    assert s["pre_rotation_verifies_under_old_key"] is True
+    assert s["new_key_rejects_old_signature"] is True
+    assert s["historically_authorized"] is True
+    assert s["stripped_receipt_fail_closed"] is True
+    assert s["removed_key_fail_closed"] is True
+
+
+async def test_s25_did_key_offline_core(offline_stack):
+    res = await _run("s25_did_key")
+    assert res.status == "complete"
+    s = res.summary
+    assert s["offline_core_ok"] is True
+    assert s["offline_verified"] == s["agent_count"]
+    assert s["tamper_rejected"] is True
+    assert s["rotation_is_new_identity"] is True
+    assert s.get("degraded") is True  # publish round-trip needs a live registry
+
+
+async def test_s26_divergence_diagnostics_core(offline_stack):
+    res = await _run("s26_divergence")
+    assert res.status == "complete"
+    s = res.summary
+    assert s["diagnostics_ok"] is True
+    assert s["version_hashes_differ"] is True
+    assert s["version_cause_identified"] is True
+    assert s["preimage_diff_localized"] is True
+    assert s.get("degraded") is True  # hash_mismatch rejection needs a live registry
 
 
 # ── graceful degradation contract (complete + degraded: true) ────────────

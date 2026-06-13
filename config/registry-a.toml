@@ -29,7 +29,11 @@ max_connections = 10
 # anonymous_public_reads = true preserves anonymous access to
 # public-visibility contexts.
 enabled                = true
-did_methods            = ["did:web"]
+# did:key added for the ACDP 0.2 ephemeral-agent scenarios (S25): a
+# did:key producer carries its key in the DID itself, so the registry
+# verifies it through acdp's pure offline path (no DID-document fetch).
+# did:web stays mandatory.
+did_methods            = ["did:web", "did:key"]
 anonymous_public_reads = true
 token_ttl_seconds      = 3600
 challenge_ttl_seconds  = 300
@@ -104,6 +108,14 @@ idempotency_key_ttl_seconds = 86400
 # Per-agent challenge throttle (registry 2e7b4a5). A burst past this earns a
 # 429 + Retry-After; the playground's TokenManager honours it cooperatively.
 challenge_rate_per_minute   = 60
+
+# NOTE: registry-a is intentionally NOT a receipts registry. The registry
+# refuses to start with both `[playground] enabled = true` (the unverified
+# run-keyed publish path the legacy scenarios rely on) and `[receipt]`
+# configured — a receipts-advertising registry must verify every publish
+# (RFC-ACDP-0010 §7, no degraded mode). Receipts live on the dedicated
+# verified-publish registry-c (config/registry-c.toml), which the S22/S24
+# receipts scenarios target via did:key.
 
 [playground]
 enabled = true

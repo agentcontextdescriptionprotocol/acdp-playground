@@ -21,7 +21,10 @@ max_connections = 10
 
 [auth]
 enabled                = true
-did_methods            = ["did:web"]
+# did:key enabled for parity with registry-a (ACDP 0.2 ephemeral
+# agents). Receipts are intentionally NOT provisioned here — the
+# receipts scenarios target registry-a only.
+did_methods            = ["did:web", "did:key"]
 anonymous_public_reads = true
 token_ttl_seconds      = 3600
 challenge_ttl_seconds  = 300

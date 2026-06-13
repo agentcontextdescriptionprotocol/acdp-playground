@@ -1,0 +1,76 @@
+# registry-c — the dedicated *receipts-profile* registry (RFC-ACDP-0010,
+# ACDP 0.2 workstream A). Unlike registry-a/b, this registry verifies every
+# publish (no `[playground]` lax mode) so it can mint a receipt that attests
+# the producer key it resolved. The playground reaches it through did:key
+# producers (S22/S24): did:key bodies are verified by the registry entirely
+# offline (the key is embedded in the DID), so no DID hosting is required —
+# which is exactly why this is the playground's live verified-publish path.
+
+[registry]
+authority = "registry-c.playground.local"
+port      = 8300
+# 0.0.0.0 opt-in is safe because [auth] is enabled below (see registry-a).
+bind      = "0.0.0.0"
+profiles  = ["acdp-registry-core", "acdp-registry-discovery"]
+cross_registry_resolution = true
+
+[registry.tls]
+enabled = false
+
+[registry.cors]
+allowed_origins = []
+
+[storage]
+backend     = "sqlite"
+sqlite_path = "/app/data/registry-c.db"
+max_connections = 10
+
+[auth]
+enabled                = true
+# did:key is the verified-publish path for the receipts demo; did:web stays
+# mandatory but the playground's *.playground.local DIDs aren't web-hosted,
+# so did:web publishes here degrade (their offline cores carry the contract).
+did_methods            = ["did:web", "did:key"]
+anonymous_public_reads = true
+token_ttl_seconds      = 3600
+challenge_ttl_seconds  = 300
+token_leeway_seconds   = 30
+# jwt_secret comes from ACDP_REGISTRY_AUTH__JWT_SECRET (compose env).
+require_tenant = false
+admin_tokens   = ["playground-registry-admin"]
+
+[webhook]
+# Disabled for local-stack demos (registry SSRF refuses http://); see
+# registry-a.toml. The playground emits its own SSE directly.
+enabled        = false
+url            = "http://playground:8000/webhooks/acdp"
+timeout_seconds = 5
+max_retries    = 3
+queue_capacity = 1024
+
+[limits]
+max_payload_bytes           = 1048576
+max_embedded_bytes          = 65536
+idempotency_key_ttl_seconds = 86400
+challenge_rate_per_minute   = 60
+
+# ── Registry receipts (RFC-ACDP-0010, ACDP 0.2 workstream A) ─────────
+# Provisioning this section makes registry-c a receipts-profile registry:
+# every publish response and retrieval carries a registry-signed receipt
+# binding ctx_id + lineage_id + content_hash + producer key_fingerprint,
+# and the well-known capabilities advertise `acdp-registry-receipts`
+# (acdp_version bumps to 0.2.0).
+#
+# The seed is deterministic demo material (sha256("acdp-playground
+# -registry-a-receipt-key-v1"), kept for continuity). It MUST stay in
+# lock-step with the playground's `registry_c_receipt_seed_b64` setting
+# (playground/config.py) — the receipts scenarios derive the registry's
+# Ed25519 verification key from the same seed to verify receipts without
+# resolving the (non-web-hosted) registry DID. Rotate by adding the old
+# public key under [[receipt.retired_keys]] before swapping the seed.
+[receipt]
+signing_key_seed_b64 = "9NKlBoCp1saUEzMgFonzReHSPbkEN9ba8NrAyR2TYYY="
+key_id_fragment      = "receipt-key-1"
+
+# NOTE: no [playground] section — incompatible with [receipt] (see
+# registry-a.toml). This registry has no unverified publish path.

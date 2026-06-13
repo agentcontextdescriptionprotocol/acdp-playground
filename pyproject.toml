@@ -14,7 +14,12 @@ dependencies = [
     # 0.2.0 adds AcdpCanonicalizer + AcdpSsrfPolicy, which acdp_client now
     # delegates JCS canonicalization and SSRF classification to; 0.3.0 adds the
     # did:web helpers (AcdpDid / AcdpDidDocument) the s19 scenario resolves with.
-    "acdp>=0.3.0",
+    # 0.4.0 is the ACDP 0.2 trust-hardening surface: AcdpVerifier.verify_receipt
+    # / verify_body_offline / explain_hash_mismatch / canonical_preimage /
+    # fingerprint_ed25519_b64, the did:key producer constructors
+    # (generate_did_key / from_seed_did_key), and build_*_request(acdp_version=,
+    # omit_acdp_version=) — driven by the S22–S26 scenarios.
+    "acdp>=0.4.0",
 ]
 
 [project.optional-dependencies]

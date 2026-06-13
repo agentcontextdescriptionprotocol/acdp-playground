@@ -31,6 +31,13 @@ EXPECTED = {
     "s19_cp_did_web_p256",
     "s20_reserved_tenant",
     "s21_capabilities_p256",
+    # ACDP 0.2 trust & hardening (RFC-ACDP-0010): receipts, did:key,
+    # historical keys, divergence diagnostics.
+    "s22_receipts",
+    "s23_receipt_tamper",
+    "s24_historical_key",
+    "s25_did_key",
+    "s26_divergence",
 }
 
 

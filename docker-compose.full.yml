@@ -9,11 +9,30 @@
 # forwarded webhooks land on `/ingest/acdp` and the auth/revocation
 # scenarios have a real IdP to talk to.
 #
-# The control plane runs DB-less (AUTH_PERSISTENCE=memory,
-# STREAM_HUB_STRATEGY=memory) — fine for a single-instance demo; switch
-# to postgres/redis for anything durable.
+# The control plane requires Postgres: ACDP 0.2 (RFC-ACDP-0010) persists the
+# event store, run records, and receipt-audit verdicts there, and the CP runs
+# its Drizzle migrations on boot (src/db/migrate.ts) before NestJS bootstraps.
+# A throwaway `db` service backs the demo (tmpfs — state dies with the stack).
+# Auth nonces/revocations still live in memory (AUTH_PERSISTENCE=memory), fine
+# for this single-instance demo.
 
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: acdp_control_plane
+    tmpfs:
+      # Ephemeral demo storage — the audit/event tables are recreated by the
+      # CP's boot migrations on every `up`.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d acdp_control_plane"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   control-plane:
     build:
       context: ../acdp-control-plane
@@ -23,6 +42,9 @@ services:
       PORT: "3001"
       HOST: 0.0.0.0
       NODE_ENV: production
+      # The CP connects here at boot to run migrations and back the event /
+      # run / receipt_audit stores. Matches the `db` service credentials.
+      DATABASE_URL: ${CONTROL_PLANE_DATABASE_URL:-postgres://postgres:postgres@db:5432/acdp_control_plane}
       AUTH_PERSISTENCE: memory
       STREAM_HUB_STRATEGY: memory
       # IdP — issue/introspect/revoke tokens.
@@ -36,9 +58,22 @@ services:
       # Webhook ingest HMAC — MUST equal the playground's
       # CONTROL_PLANE_HMAC_SECRET (it signs forwarded webhooks with it).
       WEBHOOK_SECRET: ${CONTROL_PLANE_HMAC_SECRET:-playground-cp-secret}
-      # Bearer API keys; the admin subset gates introspection/feed/reload.
-      AUTH_API_KEYS: ${CONTROL_PLANE_API_KEY:-playground-cp-api-key}
+      # Bearer API keys. AUTH_ADMIN_API_KEYS is a *subset* of AUTH_API_KEYS
+      # (the auth guard rejects any bearer not in AUTH_API_KEYS before it ever
+      # checks admin), so the admin token MUST also be listed in AUTH_API_KEYS
+      # — otherwise admin endpoints 401 even with the admin bearer.
+      AUTH_API_KEYS: ${CONTROL_PLANE_API_KEY:-playground-cp-api-key},${CONTROL_PLANE_ADMIN_TOKEN:-playground-cp-admin}
       AUTH_ADMIN_API_KEYS: ${CONTROL_PLANE_ADMIN_TOKEN:-playground-cp-admin}
+      # Registry-receipt audit mode (RFC-ACDP-0010, ACDP 0.2). The CP
+      # independently audits the receipt on every ingested context_published
+      # event and surfaces discrepancy flags at GET /runs/:id `trust.flagged[]`
+      # — the second-observer that catches a misbehaving registry (S23),
+      # persisting verdicts to the `receipt_audits` table (now that the stack
+      # has Postgres). The 0.2 trust *signals* (key_fingerprint /
+      # registry_receipt) also forward via open-schema ingest regardless.
+      RECEIPT_AUDIT_ENABLED: ${CONTROL_PLANE_RECEIPT_AUDIT_ENABLED:-true}
+      RECEIPT_AUDIT_INTERVAL_SECONDS: ${CONTROL_PLANE_RECEIPT_AUDIT_INTERVAL_SECONDS:-15}
+      RECEIPT_AUDIT_LOOKBACK_HOURS: ${CONTROL_PLANE_RECEIPT_AUDIT_LOOKBACK_HOURS:-24}
       # Policy + domain packs (P7). `static` needs no OPA sidecar.
       POLICY_BACKEND: ${POLICY_BACKEND:-static}
       DOMAIN_PACKS: ${DOMAIN_PACKS:-finance}
@@ -83,11 +118,15 @@ services:
       TRUSTED_ISSUERS: ${CONTROL_PLANE_TRUSTED_ISSUERS:-}
       REVOCATION_FEEDS: ${CONTROL_PLANE_REVOCATION_FEEDS:-}
     healthcheck:
-      # node:alpine ships busybox wget, not curl.
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/healthz"]
+      # The CP runtime image ships neither curl nor wget; use the node binary
+      # that runs the app to hit /healthz (exit 0 only on HTTP 200).
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 12
+    depends_on:
+      db:
+        condition: service_healthy
 
   playground:
     environment:
